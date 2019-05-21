@@ -146,7 +146,23 @@ struct Player {
 		cin >> m_gold; cin.ignore();
 		cin >> m_income; cin.ignore();
 	}
-	
+	bool CanCreateUnits(int count, int level, int incomeFromUnits) const noexcept {
+		bool is = true;
+		// if we create this unit, next time we need to pay @salary (upkeep)
+		int gold{ m_gold - count * sd::costByLevel[level - 1] };
+
+		if (gold < 0) {
+			is = false;
+		}
+		//update income
+		int income{ m_income + incomeFromUnits - count * sd::salaryByLevel[level - 1] };
+
+		if (gold + income < 0) {
+			is = false;
+		}
+
+		return is;
+	}
 	bool CanCreateUnit(int level, int incomeFromUnitPos) const noexcept {
 		bool is = true;
 		// if we create this unit, next time we need to pay @salary (upkeep)
@@ -249,7 +265,7 @@ struct Unit {
 		m_pos(pos) {};
 
 	void Read() {
-		cin >> m_owner >> m_id >> m_level >> m_pos; 
+		cin >> m_owner >> m_id >> m_level >> m_pos;
 		cin.ignore();
 	}
 
@@ -258,7 +274,7 @@ struct Unit {
 	}
 
 	bool CanKill(const Unit& u) const noexcept {
-		return u.m_level < m_level;
+		return u.m_level < m_level || m_level == 3;
 	}
 
 	int	m_owner;
@@ -428,18 +444,20 @@ public:
 		this->Dfs(bridge, Vec2{-1,-1}, score, type);
 		return score;
 	}
+	
 	/* used to calculate size of CC */
-	template <class Pred>
-	void Dfs(Vec2 v, int& visits, Pred pred) {
+	template <class Pred, class Calc>
+	void Dfs(Vec2 v, int& counter, Pred pred, Calc calcFn) {
 		static_assert(is_invocable_v<Pred>, "can't invoce predicate");
+		static_assert(is_invocable_v<Calc, Vec2>, "can't invoce calc predicate");
 		m_visited[v.y][v.x] = true;
-		visits++;
+		counter+= calcFn(v);
 		for (auto& sh : m_shift) {
 			auto to{ v + sh };
 			if (!IsValid(to) || m_visited[to.y][to.x]) continue;
 			auto ty{ m_map->Get(to) };
 			if (pred(to))
-				Dfs(to, visits, pred);
+				Dfs(to, counter, pred, calcFn);
 		}
 	}
 
