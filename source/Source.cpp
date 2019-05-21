@@ -137,16 +137,16 @@ struct Player {
 	bool CanCreate(int level, int incomeFromUnitPos) const noexcept {
 		bool is = true;
 		// if we create this unit, next time we need to pay @salary (upkeep)
-		int upkeep{ m_upkeep + sd::salaryByLevel[level - 1] };
-		int gold{ m_gold - sd::costByLevel[level-1] - upkeep };
+	//	int upkeep{ m_upkeep + sd::salaryByLevel[level - 1] };
+		int gold{ m_gold - sd::costByLevel[level-1] };
 
 		if (gold < 0) {
 			is = false;
 		}
 		//update income
-		gold += m_income + incomeFromUnitPos;
+		int income{ m_income + incomeFromUnitPos  - sd::salaryByLevel[level - 1] };
 
-		if (gold < 0) {
+		if (gold + income < 0) {
 			is = false;
 		}
 
