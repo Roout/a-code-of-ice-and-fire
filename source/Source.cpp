@@ -10,6 +10,7 @@
 #include <optional>
 #include <random>
 #include <algorithm>
+#include <type_traits> //is_invocable_v
 using namespace std;
 /*
 	Constraints
@@ -64,15 +65,18 @@ constexpr Tile toTile(char c) noexcept {
 
 namespace ScoreDistribution
 {
-	const int mxScore = 1000;
-	const int mnScore = 1;
+	const int mxScore{ 1000 };
+	const int mnScore{ 1 };
 
-	const int activeTileScore = 3;
-	const int inactiveTileScore = 2;
-	const int defaultScore = mnScore;
+	const int activeTileScore{ 3 };
+	const int inactiveTileScore{ 2 };
+	const int defaultScore{ mnScore };
 
 	const int costByLevel[3] = { 10, 20, 30 };
-	const int salaryByLevel[3] = { 1, 2, 3 };
+	const int salaryByLevel[3] = { 1, 4, 20 };
+
+	const int incomeFromMine{ 4 };
+	const int towerCost{ 15 };
 };
 namespace sd = ScoreDistribution;
 
@@ -97,7 +101,9 @@ constexpr bool IsValid(Vec2 pos) noexcept {
 }
 
 enum class BType: int {
-	HQ = 0
+	HQ = 0,
+	Mine = 1,
+	Tower = 2
 };
 constexpr int toInt(BType ty) noexcept {
 	return static_cast<int>(ty);
@@ -122,7 +128,14 @@ struct Building {
 	bool IsHQ() const noexcept {
 		return m_type == BType::HQ;
 	}
+	bool IsMine() const noexcept {
+		return m_type == BType::Mine;
+	}
+	bool IsTower() const noexcept {
+		return m_type == BType::Tower;
+	}
 };
+
 struct Mine {
 	Vec2 m_pos;
 };
@@ -134,7 +147,7 @@ struct Player {
 		cin >> m_income; cin.ignore();
 	}
 	
-	bool CanCreate(int level, int incomeFromUnitPos) const noexcept {
+	bool CanCreateUnit(int level, int incomeFromUnitPos) const noexcept {
 		bool is = true;
 		// if we create this unit, next time we need to pay @salary (upkeep)
 	//	int upkeep{ m_upkeep + sd::salaryByLevel[level - 1] };
@@ -152,6 +165,13 @@ struct Player {
 
 		return is;
 	}
+	bool CanCreateBuilding(int cost) const noexcept {
+		return  m_gold - cost >= 0;
+	}
+	void CreateBuilding(int cost, int incomeFromCreation) noexcept {
+		m_gold -= cost;
+		m_income += incomeFromCreation; // 0 for towers
+	}
 	void CreateUnit(int level, int incomeFromUnitPos) noexcept {
 		m_gold -= sd::costByLevel[level - 1];
 		m_income += incomeFromUnitPos - sd::salaryByLevel[level - 1];
@@ -164,6 +184,7 @@ struct Player {
 };
 
 struct BuildingManager {
+
 	void ReadMines() {
 		int numberMineSpots;
 		cin >> numberMineSpots; cin.ignore();
@@ -175,6 +196,7 @@ struct BuildingManager {
 			m_mines[i].m_pos = pos;
 		}
 	}
+	
 	void Read() {
 		int buildingCount;
 		cin >> buildingCount; cin.ignore();
@@ -190,9 +212,31 @@ struct BuildingManager {
 			m_buildings.emplace_back(owner, ::toBType(buildingType), pos);
 		}
 	}
+
+	vector<Building> GetMines(bool isMy) const noexcept {
+		vector<Building> mines;
+		for_each(m_buildings.begin(), m_buildings.end(),[&mines,&isMy](auto& b) {
+			if(isMy == b.IsMy() && b.IsMine()) mines.emplace_back(b);
+		});
+		return mines;
+	}
+
+	vector<Building> GetTowers(bool isMy) const noexcept {
+		vector<Building> towers;
+		for_each(m_buildings.begin(), m_buildings.end(), [&towers, &isMy](auto& b) {
+			if (isMy == b.IsMy()&& b.IsTower()) towers.emplace_back(b);
+		});
+		return towers;
+	}
+
+	size_t Count(BType ty, bool isMy) const noexcept {
+		return (size_t)count_if(m_buildings.begin(), m_buildings.end(), [&ty, &isMy](auto& b) {
+			return (isMy == b.IsMy() && b.m_type == ty);
+		});
+	}
 	// data
-	vector<Building> m_buildings;
-	vector<Mine> m_mines;
+	vector<Building> m_buildings;// owned buildings
+	vector<Mine> m_mines; // all mines
 };
 
 struct Unit {
@@ -211,6 +255,10 @@ struct Unit {
 
 	bool IsMy() const noexcept {
 		return m_owner == 0;
+	}
+
+	bool CanKill(const Unit& u) const noexcept {
+		return u.m_level < m_level;
 	}
 
 	int	m_owner;
@@ -259,6 +307,11 @@ namespace commands
 	string Msg(const char* msg) {
 		stringstream ss;
 		ss << "MSG " << msg << ";";
+		return ss.str();
+	}
+	string Build(BType ty, Vec2 pos) {
+		stringstream ss;
+		ss << "BUILD  " << toInt(ty) << " " << pos.x << " " << pos.y << ";";
 		return ss.str();
 	}
 }
@@ -375,6 +428,20 @@ public:
 		this->Dfs(bridge, Vec2{-1,-1}, score, type);
 		return score;
 	}
+	/* used to calculate size of CC */
+	template <class Pred>
+	void Dfs(Vec2 v, int& visits, Pred pred) {
+		static_assert(is_invocable_v<Pred>, "can't invoce predicate");
+		m_visited[v.y][v.x] = true;
+		visits++;
+		for (auto& sh : m_shift) {
+			auto to{ v + sh };
+			if (!IsValid(to) || m_visited[to.y][to.x]) continue;
+			auto ty{ m_map->Get(to) };
+			if (pred(to))
+				Dfs(to, visits, pred);
+		}
+	}
 
 	void Dfs(Vec2 v, int& visits, Tile type) {
 		m_visited[v.y][v.x] = true;
@@ -395,7 +462,6 @@ public:
 		auto optUnit{ m_uManager->GetUnitAt(v) };
 // calc score:
 		auto tileScore{ 0 };
-
 		if (optUnit.has_value()) {
 			// tile is with opponent's unit (weaker or equel in level)
 			// [unit's cost + default enemy tile score]
@@ -636,7 +702,7 @@ public:
 				cc.Dfs(tile.first, income, Tile::mInactive);
 				cc.Clear();
 			}
-			if (me.CanCreate(1, income)) {
+			if (me.CanCreateUnit(1, income)) {
 				me.CreateUnit(1, income);
 				m_takenPositions.insert(tile.first);
 				m_answer.emplace_back(commands::Train(1, tile.first));
