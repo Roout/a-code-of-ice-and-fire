@@ -253,12 +253,12 @@ namespace commands
 	}
 	string Wait() {
 		stringstream ss;
-		cout << "WAIT;";
+		ss << "WAIT;";
 		return ss.str();
 	}
 	string Msg(const char* msg) {
 		stringstream ss;
-		cout << "MSG " << msg << ";";
+		ss << "MSG " << msg << ";";
 		return ss.str();
 	}
 }
