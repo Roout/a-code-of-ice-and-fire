@@ -139,6 +139,13 @@ struct Building {
 
 struct Mine {
 	Vec2 m_pos;
+
+	Mine() {};
+	Mine(Vec2 p) :m_pos(p) {};
+
+	bool operator == (const Mine& m) const noexcept {
+		return m.m_pos == m_pos;
+	}
 };
 
 struct Player {
@@ -404,7 +411,7 @@ private:
 				m_finish[v.y][v.x] = min(m_finish[v.y][v.x], m_finish[to.y][to.x]);
 				if (m_finish[to.y][to.x] > m_start[v.y][v.x])
 				{//found bridge
-					// cerr << "Bridge: " << v << " - " << to << endl;
+				//	 cerr << "Bridge: " << v << " - " << to << endl;
 					m_bridges.emplace_back(v, to);
 				}
 			}
@@ -576,7 +583,7 @@ public:
 		for (auto& sh : shift) {
 			auto neighbor{ sh + p };
 			if (IsValid(neighbor) && map.Get(neighbor) == type) {
-				auto optUnit = m_data->m_uManager.GetUnitAt(p);
+				auto optUnit = m_data->m_uManager.GetUnitAt(neighbor);
 				if (optUnit.has_value()) {
 					mn = min (optUnit.value().m_level, mn);
 					mx = max (optUnit.value().m_level, mx);
@@ -589,6 +596,17 @@ public:
 	bool CanCreateUnit(bool isMe, int level, int expectedIncome ) const noexcept {
 		auto& player = isMe ? m_data->m_me : m_data->m_enemy;
 		return player.CanCreateUnit(level, expectedIncome);
+	}
+	optional<Vec2> GetInactiveNeighbor(bool isMy, Vec2 p) const noexcept {
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		auto& map{ m_data->m_map };
+		for (auto& sh : shift) {
+			auto neighbor{ sh + p };
+			if (IsValid(neighbor) && map.Get(neighbor) == (isMy? Tile::mInactive: Tile::eInactive)) {
+				return make_optional(neighbor);
+			}
+		}
+		return nullopt;
 	}
 	bool HasActiveEnemyNeighbor(Vec2 p) const noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
@@ -638,7 +656,12 @@ public:
 		}
 		return false;
 	}
-
+	bool IsMine(Vec2 p) const noexcept {
+		const auto& buildings{ m_data->m_bManager.m_buildings };
+		return (find_if(buildings.cbegin(), buildings.cend(), [&p](auto& b) {
+			return b.IsMine() && b.m_pos == p;
+		}) != buildings.cend());
+	}
 	/* Score:
 	- enemy active tile: 
 		- enemy active tile with HQ => MAX
@@ -659,14 +682,42 @@ public:
 		auto& bManager{ m_data->m_bManager };
 		auto& buildings{ bManager.m_buildings };
 		auto& enemy{ m_data->m_enemy };
-		auto optUnit{ uManager.GetUnitAt(dest) };
 
 		// calculations that used often
 		bool hasActiveEnemyNeighbor{ this->HasActiveEnemyNeighbor(dest) };
+		auto myInactiveNeighbor{ this->GetInactiveNeighbor(true, dest) };
 		auto[eMinLevel, eMaxLevel] = this->MinMaxLevelAround(dest, Tile::eActive);
+		auto worth{ sd::costByLevel[unit.m_level - 1] };
+		auto AddMyInactiveComponent = [&](int& score) {
+			// @pos is always valid
+			auto pred = [&map](Vec2 pos) {
+				return map.Get(pos) == Tile::mInactive;
+			};
+			auto calc = [&buildings, &bManager](Vec2 pos)
+			{ // need a sum: visit number and buildings cost!
+				auto it = find_if(buildings.begin(), buildings.end(), [&pos](auto&b) {
+					return b.m_pos == pos;
+				});
+				int score{ 0 };
+				if (it == buildings.end()) {
+					score = sd::inactiveTileScore;
+				}
+				else if (it->m_type == BType::Tower) {
+					score = sd::towerCost + sd::inactiveTileScore;
+				}
+				else if (it->m_type == BType::Mine) {
+					score = sd::minMineCost + 4 * bManager.Count(BType::Mine, false) + sd::inactiveTileScore;
+				}
+				return score;
+			};
+			m_search.Clear();
+			m_search.Dfs<decltype(pred), decltype(calc)>(myInactiveNeighbor.value(), score, pred, calc);
+			cerr << "Find |CC| with size of " << score << " at " << dest << endl;
+		};
 
 		const int mx{ 1000 };
 		const int mn{ -mx };
+
 
 		Tile destType{ map.Get(dest) };
 		int score{ 0 };
@@ -692,10 +743,10 @@ public:
 			if(isEmpty) isEmpty &= !bManager.GetBuildingAt(dest).has_value();
 			if (unit.m_pos == dest || isEmpty) {
 				score = 0;
-				bool isBridge{ this->IsBridge(dest,Tile::mActive) };
+				bool isBridge{ this->IsBridge(dest, Tile::mActive) };
 				if (hasActiveEnemyNeighbor && isBridge) {
 					bool isDangerous{ this->CanCreateUnit(false, min(unit.m_level + 1, 3), 1) };
-					if (isDangerous || eMaxLevel >= unit.m_level) {
+					if (isDangerous || eMaxLevel > unit.m_level) {
 						score = mn;
 						cerr << "Expect to train\build def at " << dest << endl;
 					}
@@ -709,44 +760,130 @@ public:
 			}
 		}; break;
 		case Tile::mInactive: {
-			bool isDangerous{ this->CanCreateUnit(false, min(unit.m_level + 1, 3), 1) };
-			if (hasActiveEnemyNeighbor && isDangerous) {
-				cerr << "Expect to train or build here " << dest << endl;
-				score = mn;
-			}
-			else
-			{ // calculate CC size:
-				// @pos is always valid
-				auto pred = [&map](Vec2 pos) {
-					return map.Get(pos) == Tile::mInactive;
-				};
-				auto calc = [&buildings,&bManager](Vec2 pos)
-				{ // need a sum: visit number and buildings cost!
-					auto it = find_if(buildings.begin(), buildings.end(), [&pos](auto&b) {
-						return b.m_pos == pos;
-					});
-					int score{ 0 };
-					if (it == buildings.end()) {
-						score = sd::defaultScore;
-					}
-					else if (it->m_type == BType::Tower) {
-						score = sd::towerCost + sd::defaultScore;
-					}
-					else if (it->m_type == BType::Mine) {
-						score = sd::minMineCost + 4 * bManager.Count(BType::Mine, true) + sd::defaultScore;
-					}
-					return score;
-				};
-				m_search.Clear();
-				m_search.Dfs<decltype(pred), decltype(calc)>(dest, score, pred, calc);
-				cerr << "Find |CC| with size of " << score << " at " << dest << endl;
-			}
+			cerr << "Error! Trying to create on my inactive tile : " << dest<< endl;
 		}; break;
 		case Tile::eActive: {
-		
+			bool isBridge{ this->IsBridge(dest, Tile::eActive) };
+			cerr << dest << " is bridge: " << boolalpha << isBridge << endl;
+			auto optUnit{ uManager.GetUnitAt(dest) };
+			auto optBuilding{ bManager.GetBuildingAt(dest) };
+			auto addForBridge = [&]() {
+				auto deal{ 0 };
+				// CC ( units +  buildings + visits) which can be lost with destroyed bridge!
+				m_search.Clear();
+				deal = m_search.GetScoreAfterBridge(m_eHQ, dest, Tile::eActive);
+				score += deal;
+			};
+			if (this->IsProtected(dest)) // O(buildings.size() * shift.size())
+			{ // only unit level 3 can advance
+				if (unit.m_level == 3) {
+					if (myInactiveNeighbor.has_value()) {
+						AddMyInactiveComponent(score);
+					}
+					if (isBridge) {
+						addForBridge();
+						cerr << "Trying to break enemy bridge with size of CC with : " 
+							<< score << " score for " << dest << endl;
+						if (score > 0) {
+							cerr << "For better life! Deal|lose: " << score << "|" << worth << endl;
+						}
+						else {
+							cerr << "We're losing: " << score << " < " << worth << endl;
+						}
+					}
+					else {
+						bool isDangerous{ enemy.CanCreateUnit(3, 1) };
+						score += sd::activeTileScore;
+						if (isDangerous || eMaxLevel > unit.m_level) {
+							if (eMaxLevel < 3)  score += sd::costByLevel[3] / 2; // he will have to build LEVEL 3 unit! So it' quite good!
+							else score -= worth;
+						}
+						
+						if (optBuilding.has_value()) score += optBuilding.value().IsMine() ? sd::minMineCost : sd::towerCost;
+						else if (optUnit.has_value()) score += sd::costByLevel[optUnit.value().m_level - 1];
+					}
+				}
+				else {
+					score = mn; // invalid command
+				}
+			}
+			else { 
+				if(this->IsTower(dest))  {
+					if (unit.m_level == 3) {
+						score = sd::towerCost;
+						if (myInactiveNeighbor.has_value()) {
+							AddMyInactiveComponent(score);
+						}
+						if (isBridge) {
+							addForBridge();
+							cerr << "Trying to break enemy bridge with tower: " 
+								 << score << " score for " << dest << endl;
+						}
+					}
+					else { // can't do anything to tower wiht low level unit
+						score = mn;
+					}
+				}
+				else {
+					int	minReqLevelToKill{ min(unit.m_level + 1, 3) };
+					bool canCreateBetterUnit{ enemy.CanCreateUnit(minReqLevelToKill, 1) };
+					bool canKillMyUnit{ eMaxLevel > unit.m_level };
+
+					if (myInactiveNeighbor.has_value()) {
+						AddMyInactiveComponent(score);
+					}
+
+					if (optUnit.has_value()) {
+						auto enemyLevel{ optUnit.value().m_level };
+						
+						if (enemyLevel < unit.m_level) {
+							score = sd::activeTileScore;
+							if (canKillMyUnit) {
+								score -= worth;
+							}
+							else if (canCreateBetterUnit) {// we force to create unit with greater strength
+								score += sd::costByLevel[minReqLevelToKill - 1] / 2; 
+							}
+							
+							if (isBridge) {
+								addForBridge();
+								cerr << "Trying to break enemy bridge: "
+									<< score << " score for " << dest << endl;
+							}
+							else {
+								score += sd::costByLevel[enemyLevel - 1];
+							}
+						}
+						else {
+							score = mn;
+						}
+					}
+					else {
+						score += sd::activeTileScore;
+						if (canKillMyUnit) {
+							score -= worth;
+						}
+						else if (canCreateBetterUnit) {// we force to create unit with greater strength
+							score += sd::costByLevel[minReqLevelToKill - 1] / 2;
+						}
+						if (isBridge) {
+							addForBridge();
+							cerr << "Trying to break enemy bridge: "
+								<< score << " score for " << dest << endl;
+						}
+						else if (this->IsMine(dest)) {
+							score += sd::minMineCost;
+						}
+					}
+				}
+			}
 		}; break;
 		case Tile::eInactive: {
-		
+			score = sd::inactiveTileScore;
+			if(myInactiveNeighbor.has_value())
+			{ // calculate CC size:
+				AddMyInactiveComponent(score);
+			}
 		}; break;
 		default:{
 			cerr << "Trying to score undefined tile: " << dest << endl;
@@ -765,6 +902,12 @@ public:
 	void Move() noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 
+		cerr << "Enemy Bridges:" << endl;
+		for (auto& [from,to] : m_eBridges) {
+			cerr << to << " ";
+		}
+		cerr << endl;
+
 		auto& map{ m_data->m_map };
 		auto& uManager{ m_data->m_uManager };
 		auto& units{ uManager.m_units };
@@ -776,17 +919,13 @@ public:
 		for (auto& unit : units) {
 			if (unit.IsMy()) {
 				vector<pair<Vec2, int>> targets;
-				targets.reserve(4); // max possible number of neighbors
+				targets.reserve(5); // max possible number of neighbors + occupied tile
 				for (auto& sh : shift) {
 					auto neighbor{ unit.m_pos + sh };
 					
-					if (!IsValid(neighbor)) continue; // in map
-
-					auto u{ uManager.GetUnitAt(neighbor) };
-					bool hasAllyUnit{ u.has_value() && u.value().IsMy() };// is occupied  by my unit
+					if (!IsValid(neighbor)) continue;
 
 					if ( map.Get(neighbor) != Tile::blocked && //not blocked
-						!hasAllyUnit && // is without my units
 						m_takenPositions.count(neighbor) == 0 ) // isn't occupied  
 					{ // calculate score:
 						targets.emplace_back(neighbor, this->ScoreMove(neighbor, unit));
@@ -807,9 +946,12 @@ public:
 					}
 					return l.second < r.second;
 				});
-				m_answer.emplace_back(commands::Move(unit.m_id, bestTarget->first));
-				m_takenPositions.insert(bestTarget->first);
-				unit.m_pos = bestTarget->first; // update position
+
+				if (!(bestTarget->first == unit.m_pos)) {
+					m_answer.emplace_back(commands::Move(unit.m_id, bestTarget->first));
+					m_takenPositions.insert(bestTarget->first);
+					unit.m_pos = bestTarget->first; // update position
+				}
 			}
 		}
 	}
@@ -959,7 +1101,7 @@ private:
 			score = sd::inactiveTileScore;
 		}
 		// bridges:
-		CCSearch cc(&map, &uManager);
+		CCSearch cc(&map, &uManager,&bManager);
 		if (isEnemyBridge) {
 			// tile is enemy Bridge. Score: 
 			// [number of opponent tiles]
@@ -1017,8 +1159,8 @@ struct Game {
 		m_data.Init();
 		while (true) {
 			m_data.Update();
-			m_commander.Update();
 			m_commander.Clear();
+			m_commander.Update();
 
 			m_commander.Move();
 			m_commander.Train();
