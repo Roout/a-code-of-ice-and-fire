@@ -21,7 +21,8 @@ Allotted response time to output on the first turn is <= 1000ms.
 struct Vec2 {
 	int x, y;
 
-	constexpr Vec2(int x_ = 0, int y_ = 0) : x(x_), y(y_) {}
+	constexpr Vec2() :x(0), y(0) {};
+	constexpr Vec2(int x_, int y_) : x(x_), y(y_) {}
 
 	int Distanse(const Vec2& rsh) const noexcept {
 		return abs(x - rsh.x) + abs(y - rsh.y);
@@ -636,7 +637,7 @@ public:
 		if (!m_data->m_bManager.GetBuildingAt(p).has_value()
 			&& !m_data->m_uManager.GetUnitAt(p).has_value())
 		{
-			return true;
+			return make_optional(p);
 		}
 		return nullopt;
 	}
@@ -709,7 +710,7 @@ public:
 	}
 	template <class Pred>
 	vector<Vec2> AllNeighbors(Vec2 center, Pred pred) const noexcept {
-		static_cast<is_invocable_v<Pred, Vec2>, "Can't invoce predicate");
+		static_assert(is_invocable_v<Pred, Vec2>, "Can't invoce predicate");
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		vector<Vec2> neighbors;
 		neighbors.reserve(4);
@@ -1206,7 +1207,7 @@ private:
 		for (const auto&[from, bridge] : m_mBridges) {
 			// calculate bridge value:
 			m_search.Clear();
-			values.emplace_back( m_search.GetScoreAfterBridge(m_mHQ, bridge, Tile::mActive));
+			values.emplace_back( m_search.GetScoreAfterBridge(m_mHQ, bridge, Tile::mActive), bridge);
 		}
 		sort(values.rbegin(), values.rend());
 
@@ -1216,7 +1217,7 @@ private:
 		}
 		cerr << endl;
 
-		for (const auto& [worth, bridge ]: values)
+		for (const auto&[worth, bridge ]: values)
 		{ 
 			const int minWorth{ 3 }; // i think it's good to protect at least 2 tiles!
 			if (worth < minWorth) {
