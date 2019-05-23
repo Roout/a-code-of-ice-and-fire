@@ -342,7 +342,7 @@ namespace commands
 	}
 	string Build(BType ty, Vec2 pos) {
 		stringstream ss;
-		ss << "BUILD  " << toInt(ty) << " " << pos.x << " " << pos.y << ";";
+		ss << "BUILD  " << (ty == BType::Mine? "MINE": "TOWER") << " " << pos.x << " " << pos.y << ";";
 		return ss.str();
 	}
 }
@@ -662,19 +662,7 @@ public:
 			return b.IsMine() && b.m_pos == p;
 		}) != buildings.cend());
 	}
-	/* Score:
-	- enemy active tile: 
-		- enemy active tile with HQ => MAX
-		- enemy active tile with unit { level lesser or equel our }  =>  [ unit cost + activeTile * 2 ] 
-		- enemy active tile with unit { level greater our }  =>  [ - MAX ]
-		- enemy active tile => [ activeTile * 2 ]
-	- enemy inactive tile
-		- enemy inactive tile => [ inactiveTile(for enemy) + activeTile (for me) ]
-	- neutral => activeTile
-	- mInactive => activeTile
-	- mActive => 0
-	- tile with enemy unit { level greater or equel our } as neighbor [ -MAX ]
-	*/
+
 	int ScoreMove(Vec2 dest, const Unit& unit) noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		auto& map{ m_data->m_map };
@@ -742,12 +730,13 @@ public:
 			isEmpty &= !uManager.GetUnitAt(dest).has_value();
 			if(isEmpty) isEmpty &= !bManager.GetBuildingAt(dest).has_value();
 			if (unit.m_pos == dest || isEmpty) {
-				score = 0;
 				bool isBridge{ this->IsBridge(dest, Tile::mActive) };
 				if (hasActiveEnemyNeighbor && isBridge) {
 					bool isDangerous{ this->CanCreateUnit(false, min(unit.m_level + 1, 3), 1) };
 					if (isDangerous || eMaxLevel > unit.m_level) {
 						score = mn;
+						if (unit.m_pos == dest) 
+							score = mn + 1; // {-999} to not move if all score around are @mn {-1000}
 						cerr << "Expect to train\build def at " << dest << endl;
 					}
 					else { 
@@ -949,6 +938,9 @@ public:
 
 				if (!(bestTarget->first == unit.m_pos)) {
 					m_answer.emplace_back(commands::Move(unit.m_id, bestTarget->first));
+					//CAN BE ERROR IF INVALID TRAINING (THERE IS UNIT WITH LEVEL > MY LEVEL)
+					// i.g. all scores are -1000, will it  choose the tile close to headquaters?? 
+					map.m_map[bestTarget->first.y][bestTarget->first.x] = Tile::mActive;
 					m_takenPositions.insert(bestTarget->first);
 					unit.m_pos = bestTarget->first; // update position
 				}
@@ -958,10 +950,14 @@ public:
 
 	///TODO: add training for defence to interupt path of enemy
 	/* TRAINING:
-	Find all my boarder tiles 
+	Goal: form pairs { score, <pos, level> }
+	Find all:
+		- my empty boarder tiles 
+		- my boarder tiles neighbors ( eActive, eInactive )
+		- my bridges check for reinforcement
 	Foreach my tile check boarder tiles and give score:
 		+ tile is enemy HQ [max score]
-		+ tile is with opponent's unit (weaker or equel in level) [unit's cost + default enemy tile score]
+		+ tile is with opponent's unit (weaker) [unit's cost + default enemy tile score]
 		+ tile is enemy Bridge [number of opponent tiles + units cost if there are any in connected component]
 		- tile is next to my Bridge [can reinforce bridge? YES = |CC|  + units cost there, NO = default tile score + 1] / 2
 		+ tile is next to my inactive [|CC|] // build bridge 
@@ -1042,7 +1038,7 @@ private:
 					map.Get(tile) != Tile::blocked )
 				{
 					visited[tile.y][tile.x] = true;
-
+					
 					if (map.Get(tile) == Tile::mActive) {
 						Q.push(tile);
 					}
