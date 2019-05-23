@@ -43,7 +43,7 @@ istream& operator >>(istream&in, Vec2& v) {
 	in >> v.x >> v.y;
 	return in;
 }
-ostream& operator <<(ostream&out, Vec2& v) {
+ostream& operator <<(ostream&out, const  Vec2& v) {
 	out << "{" << v.x << " " << v.y << "}";
 	return out;
 }
@@ -171,6 +171,19 @@ struct Player {
 
 		return is;
 	}
+
+	bool CanCreateUnits(const vector<int> & levels ) const noexcept {
+		Player dummy = *this; //copy
+		bool is = true;
+		for (auto level : levels) {
+			if (!dummy.CanCreateUnit(level, 1)) {
+				is = false; break;
+			}
+			dummy.CreateUnit(level, 1);
+		}
+		return is;
+	}
+	
 	bool CanCreateUnit(int level, int incomeFromUnitPos) const noexcept {
 		bool is = true;
 		// if we create this unit, next time we need to pay @salary (upkeep)
@@ -235,6 +248,10 @@ struct BuildingManager {
 			cin >> owner >> buildingType >> pos; cin.ignore();
 			m_buildings.emplace_back(owner, ::toBType(buildingType), pos);
 		}
+	}
+
+	void AddBuilding(int owner, BType type, Vec2 pos) {
+		m_buildings.emplace_back(owner, type, pos);
 	}
 
 	optional<Building> GetBuildingAt(Vec2 pos) const noexcept {
@@ -307,6 +324,10 @@ struct UnitManager {
 		for (auto& unit: m_units) {
 			unit.Read();
 		}
+	}
+
+	void AddUnit(int owner, int id, int level, Vec2 pos) {
+		m_units.emplace_back(owner, id, level, pos);
 	}
 
 	optional<Unit> GetUnitAt(const Vec2&pos) const noexcept {
@@ -573,6 +594,7 @@ public:
 		m_answer.clear();
 		m_mBridges.clear();
 		m_eBridges.clear();
+		m_search.Clear();
 	}
 
 	// invalid pair {-1,-1}
@@ -596,6 +618,27 @@ public:
 	bool CanCreateUnit(bool isMe, int level, int expectedIncome ) const noexcept {
 		auto& player = isMe ? m_data->m_me : m_data->m_enemy;
 		return player.CanCreateUnit(level, expectedIncome);
+	}
+	// O (5 * (size(buildings) + size(units)) ): max possible: 144*5 =   720
+	optional<Vec2> GetPositionForTowerAround(Vec2 p) const noexcept{
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		auto& map{ m_data->m_map };
+		for (auto& sh : shift) {
+			auto neighbor{ sh + p };
+			if (IsValid(neighbor)
+				&& map.Get(neighbor) == Tile::mInactive 
+				&& !m_data->m_bManager.GetBuildingAt(neighbor).has_value()
+				&& !m_data->m_uManager.GetUnitAt(neighbor).has_value()
+			) {
+				return make_optional(neighbor);
+			}
+		}
+		if (!m_data->m_bManager.GetBuildingAt(p).has_value()
+			&& !m_data->m_uManager.GetUnitAt(p).has_value())
+		{
+			return true;
+		}
+		return nullopt;
 	}
 	optional<Vec2> GetInactiveNeighbor(bool isMy, Vec2 p) const noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
@@ -641,6 +684,8 @@ public:
 
 		if (auto it = find_if(buildings.begin(), buildings.end(), [&p,&shift,&map, &ty](auto& b) {
 			if (b.IsTower()) {
+				if (b.m_pos == p) return true;
+
 				for (auto& sh : shift) {
 					auto towerNeighbor { sh + b.m_pos };
 					if (towerNeighbor == p && ty == map.Get(towerNeighbor))
@@ -661,6 +706,21 @@ public:
 		return (find_if(buildings.cbegin(), buildings.cend(), [&p](auto& b) {
 			return b.IsMine() && b.m_pos == p;
 		}) != buildings.cend());
+	}
+	template <class Pred>
+	vector<Vec2> AllNeighbors(Vec2 center, Pred pred) const noexcept {
+		static_cast<is_invocable_v<Pred, Vec2>, "Can't invoce predicate");
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		vector<Vec2> neighbors;
+		neighbors.reserve(4);
+		auto& map{ m_data->m_map };
+		for (auto& sh : shift) {
+			auto neighbor{ sh + center };
+			if (IsValid(neighbor) && pred(neighbor)) {
+				neighbors.emplace_back(neighbor);
+			}
+		}
+		return neighbors;
 	}
 
 	int ScoreMove(Vec2 dest, const Unit& unit) noexcept {
@@ -1135,6 +1195,101 @@ private:
 		return score;
 	}
 
+	// CALL ONLY AFTER MOVE!
+	void DefendBridges() noexcept {
+		auto uManager{ m_data->m_uManager };
+		auto bManager{ m_data->m_bManager };
+		auto me{ m_data->m_me };
+		auto map{ m_data->m_map };
+
+		vector<pair<int, Vec2>> values(m_mBridges.size());
+		for (const auto&[from, bridge] : m_mBridges) {
+			// calculate bridge value:
+			m_search.Clear();
+			values.emplace_back( m_search.GetScoreAfterBridge(m_mHQ, bridge, Tile::mActive));
+		}
+		sort(values.rbegin(), values.rend());
+
+		cerr << "Bridge's worth: [ ";
+		for (const auto&[worth, bridge] : values) {
+			cerr << "[" << bridge << ": " << worth << "];  ";
+		}
+		cerr << endl;
+
+		for (const auto& [worth, bridge ]: values)
+		{ 
+			const int minWorth{ 3 }; // i think it's good to protect at least 2 tiles!
+			if (worth < minWorth) {
+				cerr << bridge<< " is worthless bridge!" << endl;
+				break;
+			}
+			// make clear treats:
+			bool hasEnemyAround{ this->HasActiveEnemyNeighbor(bridge) };
+			if (!hasEnemyAround) continue;
+
+			auto optUnit{ uManager.GetUnitAt(bridge) };
+			int levelOnBridge{ (optUnit.has_value() ? optUnit.value().m_level : 0) };
+			bool isProtected { this->IsProtected(bridge) };
+			int minLevelTreat { isProtected ? 3 : min( levelOnBridge + 1, 3) };
+
+//			bool canCreateTreat{ this->m_data->m_enemy.CanCreateUnit(minLevelTreat, 1) };
+			auto treats{ this->AllNeighbors(bridge, [&uManager,&minLevelTreat](Vec2 pos) {
+				auto optUnit = uManager.GetUnitAt(pos);
+				return  (optUnit.has_value()
+					&& optUnit.value().m_level >= minLevelTreat
+					&& optUnit.value().m_owner == 0);
+			}) };
+
+			int trainingCost{ 0 };
+			vector<int> trainLevels;
+			trainLevels.reserve(treats.size());
+			for (Vec2 p : treats) {
+				auto level { optUnit.value().m_level };
+				int needLevelForKill{ this->IsProtected(p) ? 3 : min(level+1, 3) };
+				trainLevels.emplace_back(needLevelForKill);
+				trainingCost += sd::costByLevel[needLevelForKill];
+			}
+
+			const int managableGold{ 9 };
+			if (me.CanCreateUnits(trainLevels) 
+				&& (worth + managableGold >= trainingCost) 
+				&& !trainLevels.empty()
+			) { // we can nullify all treat by training!
+				cerr << "Train units: ";
+				for (size_t i = 0; i < trainLevels.size(); i++) {
+					me.CreateUnit(trainLevels[i], 1);
+					m_takenPositions.insert(treats[i]);
+					m_answer.emplace_back(commands::Train(trainLevels[i], treats[i]));
+					// UPDATE MAP & UNITS
+					map.m_map[treats[i].y][treats[i].x] = Tile::mActive;
+					uManager.AddUnit(0, -1, trainLevels[i], treats[i]); // -1 is undef id
+					cerr << treats[i] <<"; ";
+				}
+				cerr << endl;
+			}
+			else if(!isProtected && levelOnBridge < 2) {// we can't nullify or it's not worth money!
+				auto optTowerPos{ GetPositionForTowerAround(bridge) };
+				const int minLevelDefender{ 2 };
+				if (optTowerPos.has_value() && me.CanCreateBuilding(sd::towerCost)) {
+					me.CreateBuilding(sd::towerCost, 0);
+					m_takenPositions.insert(optTowerPos.value());
+					m_answer.emplace_back(commands::Build(BType::Tower, optTowerPos.value()));
+					// UPDATE BUILDINGS
+					bManager.AddBuilding(0, BType::Tower, optTowerPos.value());
+					cerr << "Create bridge-defending building: " << optTowerPos.value() << endl;
+				}
+				else if(!levelOnBridge && !bManager.GetBuildingAt(bridge).has_value() && me.CanCreateUnit(minLevelDefender, 0))
+				{ // can't create a tower and no unit/building on the bridge
+					me.CreateUnit(minLevelDefender, 0);
+					m_answer.emplace_back(commands::Train(minLevelDefender, bridge));
+					// UPDATE UNITS
+					uManager.AddUnit(0, -1, minLevelDefender, bridge); // -1 is undef id
+					cerr << "Create bridge-defending unit: " << bridge << endl;
+				}
+			}
+			// else if protected and no need to add unit 2 or tower!
+		}
+	}
 private:
 	Data* m_data;
 	vector<pair<Vec2, Vec2> > m_mBridges, m_eBridges;
