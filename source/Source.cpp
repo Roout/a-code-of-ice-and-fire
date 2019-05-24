@@ -1261,10 +1261,10 @@ private:
 		// bridges INTERSECT tilesOnBoarder
 		vector<pair<int , Vec2>> bridgesUnderAttack;
 		bridgesUnderAttack.reserve(10);
-		for (auto& [score, bridge] : bridges) {
+		for (auto& [worth, bridge] : bridges) {
 			for (auto& [boarderTile, score] : tiles) {
 				if (bridge == boarderTile) { // we can attack bridge
-					bridgesUnderAttack.emplace_back(score, bridge);
+					bridgesUnderAttack.emplace_back(worth, bridge);
 					break;
 				}
 			}
