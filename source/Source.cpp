@@ -193,15 +193,11 @@ struct Player {
 	void CreateBuilding(int cost, int incomeFromCreation) noexcept {
 		m_gold -= cost;
 		m_income += incomeFromCreation; // 0 for towers
-	/*	cerr << endl << "Gold After creating building (cost: " << cost << " ): " << m_gold << endl;
-		cerr << "Income: " << m_income << endl;*/
 	}
 	void CreateUnit(int level, int incomeFromUnitPos) noexcept {
 		m_gold -= sd::costByLevel[level - 1];
 		m_income += incomeFromUnitPos - sd::salaryByLevel[level - 1];
 		m_upkeep += sd::salaryByLevel[level - 1];
-	/*	cerr << endl << "Gold After creating unit (lvl: " << level << " ): " << m_gold << endl;
-		cerr << "Income: " << m_income << endl;*/
 	}
 // data
 	int m_gold;
@@ -776,6 +772,17 @@ public:
 		return neighbors;
 	}
 
+	vector<Vec2> GetMyMineSpots() const noexcept {
+		vector<Vec2> spots;
+		auto& mines{ m_data->m_bManager.m_mines };
+		auto& map{ m_data->m_map };
+		for_each(mines.begin(), mines.end(), [&spots,&map](auto&mine) {
+			if (map.Get(mine.m_pos) == Tile::mActive)
+				spots.emplace_back(mine.m_pos);
+		});
+		return spots;
+	}
+
 	int ScoreMove(Vec2 dest, const Unit& unit) noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		auto& map{ m_data->m_map };
@@ -1011,11 +1018,7 @@ public:
 	*/
 	void Move() {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
-		cerr << "Enemy Bridges:" << endl;
-		for (auto&[from, to] : m_eBridges) {
-			cerr << to << " ";
-		}
-		cerr << endl;
+
 		auto& map{ m_data->m_map };
 		auto& uManager{ m_data->m_uManager };
 		auto& bManager{ m_data->m_bManager };
@@ -1091,8 +1094,31 @@ public:
 	}
 
 	void Build() {
-		/*auto& bManager{ m_data->m_bManager };
-		for(auto& mine : bManager)*/
+		auto& me{ m_data->m_me };
+		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
+		bool isMy{ true };
+		auto myMines{ bManager.GetMines(isMy)};
+
+		int mineCost{ static_cast<int>( sd::minMineCost + 4 * myMines.size()) };
+		if (!me.CanCreateBuilding(mineCost)) return;
+
+		auto mineSpots{ this->GetMyMineSpots() };
+		sort(mineSpots.begin(), mineSpots.end(), [this](const Mine& lsh,const Mine& rsh) {
+			return lsh.m_pos.Distanse(m_mHQ) < rsh.m_pos.Distanse(m_mHQ);
+		});
+
+		for (auto& mine : mineSpots) {
+			if (find_if(myMines.begin(), myMines.end(), [&mine, &uManager](const Building& b) {
+				return b.m_pos == mine && !uManager.GetUnitAt(mine).has_value();
+			}) == myMines.end()
+			) {
+				me.CreateBuilding(mineCost, 4);
+				m_answer.emplace_back(commands::Build(BType::Mine, mine));
+				bManager.AddBuilding(0, BType::Mine, mine);
+				break;
+			}
+		}
 	}
 
 	void Print() {
@@ -1302,7 +1328,7 @@ private:
 		// It doesn't update/search for new bridges after removing curent one
 		vector<Vec2> solved;
 		for (const auto& [worth, bridge] : bridgesUnderAttack) {
-			// i think it's important to erase bridges where |CC| >= 3
+			// i think it's important to erase bridges where |CC| >= minWorth
 			// it also can be unit
 			const int minWorth{ 3 }; 
 			if (worth < minWorth) {
@@ -1320,7 +1346,7 @@ private:
 			int attackerLevel{ isProtected ? 3 : min(levelOnBridge + 1, 3) };
 
 			int cost{ sd::costByLevel[attackerLevel - 1] };
-			int managableGold{ sd::costByLevel[0] - minWorth }; // if can solve with lvl 1 UNit
+			int managableGold{ 5 /* sd::costByLevel[0] - minWorth*/ }; // if can solve with lvl 1 UNit
 			
 			if (worth + managableGold >= cost && me.CanCreateUnit(attackerLevel, 1)) {
 				solved.emplace_back(bridge);
@@ -1426,6 +1452,7 @@ private:
 			return (Score(lsh) - Cost(lsh) > Score(rsh) - Cost(rsh));
 		});
 
+		this->Build();
 		// Start Attack!
 		cerr << "Attackers precalc data: ";
 		for (const auto &[score, position, cost] : result) {
@@ -1438,6 +1465,7 @@ private:
 					break;
 				}
 			}
+			if (level == 3 && (me.m_gold < 45 || me.m_income < 30) ) continue;
 			//TODO: calculate income later
 			if (me.CanCreateUnit(level, 1)) { 
 				me.CreateUnit(level, 1);
@@ -1472,7 +1500,7 @@ struct Game {
 
 			m_commander.Move();
 			m_commander.Train();
-			m_commander.Build();
+		//	m_commander.Build();
 			m_commander.Print();
 		}
 	}
