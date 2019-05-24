@@ -156,23 +156,6 @@ struct Player {
 		cin >> m_gold; cin.ignore();
 		cin >> m_income; cin.ignore();
 	}
-	bool CanCreateUnits(int count, int level, int incomeFromUnits) const noexcept {
-		bool is = true;
-		// if we create this unit, next time we need to pay @salary (upkeep)
-		int gold{ m_gold - count * sd::costByLevel[level - 1] };
-
-		if (gold < 0) {
-			is = false;
-		}
-		//update income
-		int income{ m_income + incomeFromUnits - count * sd::salaryByLevel[level - 1] };
-
-		if (gold + income < 0) {
-			is = false;
-		}
-
-		return is;
-	}
 
 	bool CanCreateUnits(const vector<int> & levels ) const noexcept {
 		Player dummy = *this; //copy
@@ -210,11 +193,15 @@ struct Player {
 	void CreateBuilding(int cost, int incomeFromCreation) noexcept {
 		m_gold -= cost;
 		m_income += incomeFromCreation; // 0 for towers
+	/*	cerr << endl << "Gold After creating building (cost: " << cost << " ): " << m_gold << endl;
+		cerr << "Income: " << m_income << endl;*/
 	}
 	void CreateUnit(int level, int incomeFromUnitPos) noexcept {
 		m_gold -= sd::costByLevel[level - 1];
 		m_income += incomeFromUnitPos - sd::salaryByLevel[level - 1];
 		m_upkeep += sd::salaryByLevel[level - 1];
+	/*	cerr << endl << "Gold After creating unit (lvl: " << level << " ): " << m_gold << endl;
+		cerr << "Income: " << m_income << endl;*/
 	}
 // data
 	int m_gold;
@@ -284,6 +271,11 @@ struct BuildingManager {
 			return (isMy == b.IsMy() && b.m_type == ty);
 		});
 	}
+
+	bool IsMineSpot(Vec2 p) const noexcept {
+		return any_of(m_mines.begin(), m_mines.end(), [&p](auto&mine) {return mine.m_pos == p; });
+	}
+
 	// data
 	vector<Building> m_buildings;// owned buildings
 	vector<Mine> m_mines; // all mines
@@ -322,6 +314,7 @@ struct UnitManager {
 		int unitCount;
 		cin >> unitCount; cin.ignore();
 
+		m_units.clear();
 		m_units.resize(unitCount);
 		for (auto& unit: m_units) {
 			unit.Read();
@@ -874,7 +867,7 @@ public:
 		}; break;
 		case Tile::eActive: {
 			bool isBridge{ this->IsBridge(dest, Tile::eActive) };
-			cerr << dest << " is bridge: " << boolalpha << isBridge << endl;
+			//cerr << dest << " is bridge: " << boolalpha << isBridge << endl;
 			auto optUnit{ uManager.GetUnitAt(dest) };
 			auto optBuilding{ bManager.GetBuildingAt(dest) };
 			auto addForBridge = [&]() {
@@ -1032,6 +1025,10 @@ public:
 		std::mt19937 g(rd());
 		shuffle(units.begin(), units.end(),g);
 
+		cerr << "All units: " << endl;
+		for_each(units.begin(), units.end(), [](auto&u) {cerr << u.m_id <<" "<<u.m_pos <<"; "; });
+		cerr << endl;
+
 		for (auto& unit : units) {
 			if (unit.IsMy()) {
 				vector<pair<Vec2, int>> targets;
@@ -1058,9 +1055,11 @@ public:
 
 				targets.emplace_back(stay);
 				
+				cerr << "id: " << unit.m_id << ",targets:" << endl;
 				for_each(targets.begin(), targets.end(), [](auto&p) {
-					cerr << p.first << " " << p.second << endl;
+					cerr << p.first << " " << p.second <<"; ";
 				});
+				cerr << endl;
 				
 				auto bestTarget = max_element(targets.begin(), targets.end(), [this](auto& l, auto& r) {
 					if (l.second == r.second) {
@@ -1145,10 +1144,10 @@ private:
 
 	// CALL ONLY AFTER MOVE!
 	void DefendBridges() {
-		auto uManager{ m_data->m_uManager };
-		auto bManager{ m_data->m_bManager };
-		auto me{ m_data->m_me };
-		auto map{ m_data->m_map };
+		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
+		auto& me{ m_data->m_me };
+		auto& map{ m_data->m_map };
 
 		vector<pair<int, Vec2>> values(m_mBridges.size());
 		for (const auto&[from, bridge] : m_mBridges) {
@@ -1228,7 +1227,10 @@ private:
 			else if(!isProtected && levelOnBridge < 2 && maxLevelTreat != 3) {// we can't nullify or it's not worth money!
 				auto optTowerPos{this->GetPositionForTowerAround(bridge) };
 				const int minLevelDefender{ 2 };
-				if (optTowerPos.has_value() && me.CanCreateBuilding(sd::towerCost)) {
+				if (optTowerPos.has_value() && 
+					me.CanCreateBuilding(sd::towerCost) &&
+					!bManager.IsMineSpot(*optTowerPos)// not a mine spot
+				) {
 					me.CreateBuilding(sd::towerCost, 0);
 					m_takenPositions.insert(optTowerPos.value());
 					m_answer.emplace_back(commands::Build(BType::Tower, optTowerPos.value()));
@@ -1251,10 +1253,10 @@ private:
 	// CALL ONLY AFTER DEFEND!
 	void AttackEnemy() {
 		//declaration:
-		auto uManager{ m_data->m_uManager };
-		auto bManager{ m_data->m_bManager };
-		auto me{ m_data->m_me };
-		auto map{ m_data->m_map };
+		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
+		auto& me{ m_data->m_me };
+		auto& map{ m_data->m_map };
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		//get tiles on the boarder
 		auto tiles{ this->GetBoarderTiles() };
