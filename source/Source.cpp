@@ -731,13 +731,13 @@ public:
 		Tile ty{ map.Get(p) };
 		auto& buildings{ m_data->m_bManager.m_buildings };
 
-		if (auto it = find_if(buildings.begin(), buildings.end(), [&p,&shift,&map, &ty](auto& b) {
-			if (b.IsTower()) {
+		if (find_if(buildings.begin(), buildings.end(), [&p,&shift,&map, &ty](auto& b) {
+			if (b.IsTower() && ty == map.Get(b.m_pos)) {
 				if (b.m_pos == p) return true;
 
 				for (auto& sh : shift) {
 					auto towerNeighbor { sh + b.m_pos };
-					if (towerNeighbor == p && ty == map.Get(towerNeighbor))
+					if (towerNeighbor == p)
 					{ // tower and neighbor has the same owner
 						return true;
 					}
@@ -1007,6 +1007,7 @@ public:
 		cerr << endl;
 		auto& map{ m_data->m_map };
 		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
 		auto& units{ uManager.m_units };
 
 		std::random_device rd;
@@ -1022,9 +1023,13 @@ public:
 					
 					if (!IsValid(neighbor)) continue;
 					auto occupant { uManager.GetUnitAt(neighbor) };
+					auto building{ bManager.GetBuildingAt(neighbor) };
 					bool isOccupiedByEnemy{ occupant.has_value() && !occupant->IsMy() };
+					auto isOccupiedByMyBuilding{ building.has_value() && building->IsMy() };
+
 					if ( map.Get(neighbor) != Tile::blocked && //not blocked
-						(!occupant.has_value() || isOccupiedByEnemy) //nobody or enemy
+						(!occupant.has_value() || isOccupiedByEnemy) && //nobody or enemy
+						!isOccupiedByMyBuilding
 						//	m_takenPositions.count(neighbor) == 0 ) // isn't occupied  
 					) { // calculate score:
 						targets.emplace_back(neighbor, this->ScoreMove(neighbor, unit));
