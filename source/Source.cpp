@@ -527,10 +527,11 @@ public:
 				map->m_map[v.y][v.x] = to;
 				// remove units from manager!
 				uManager->MarkUnitForRemove(v);
+				cerr << "Marked: " << v << endl;
 			}
 			return is;
 		};
-		this->Dfs<decltype(modify), decltype(calc)>(start, score, modify, calc);
+		this->Dfs<decltype(modify), decltype(calc)>(bridge, score, modify, calc);
 		uManager->RemoveMarkedUnits();
 	}
 	/* used to calculate CC */
@@ -1070,6 +1071,11 @@ public:
 
 				if (!(bestTarget->first == unit.m_pos)) {
 					m_answer.emplace_back(commands::Move(unit.m_id, bestTarget->first));
+					if (this->IsBridge(bestTarget->first, Tile::eActive)) 
+					{ // cut of connected component
+						m_search.Clear();
+						m_search.ChangeTilesAfterTheBridge(m_eHQ, bestTarget->first, Tile::eActive, Tile::eInactive);
+					}
 					//CAN BE ERROR IF INVALID TRAINING (THERE IS UNIT WITH LEVEL > MY LEVEL)
 					// i.g. all scores are -1000, will it  choose the tile close to headquaters?? 
 					map.m_map[bestTarget->first.y][bestTarget->first.x] = Tile::mActive;
