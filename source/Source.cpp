@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <tuple>
 #include <set>
 #include <functional>
 #include <sstream>
@@ -338,7 +339,25 @@ struct UnitManager {
 		return (it == m_units.end() ? nullopt : make_optional(*it));
 	}
 
+	void MarkUnitForRemove(Vec2 pos) noexcept {
+		auto it = find_if(m_units.begin(), m_units.end(), [&pos](const Unit&u) {
+			return u.m_pos == pos;
+		});
+		if (it != m_units.end()) it->m_id = m_idForRemove;
+	}
+// TODO: CLEAN UP!
+	void RemoveMarkedUnits() noexcept{
+		int id = m_idForRemove;
+		m_units.erase(
+			remove_if(m_units.begin(), m_units.end(), [id](const Unit&u) {
+				if (u.m_id == id) cerr << "Remove unit at " << u.m_pos << endl;
+				return u.m_id == id;
+			}),
+			m_units.end()
+		);
+	}
 	vector<Unit> m_units;
+	int m_idForRemove{ -1000 };
 };
 namespace commands 
 {
@@ -364,7 +383,7 @@ namespace commands
 	}
 	string Build(BType ty, Vec2 pos) {
 		stringstream ss;
-		ss << "BUILD  " << (ty == BType::Mine? "MINE": "TOWER") << " " << pos.x << " " << pos.y << ";";
+		ss << "BUILD " << (ty == BType::Mine? "MINE": "TOWER") << " " << pos.x << " " << pos.y << ";";
 		return ss.str();
 	}
 }
@@ -400,11 +419,17 @@ public:
 		m_map(map),
 		m_shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} }
 	{//default ctor
+		m_mHQ = Vec2{ 0,0 }, m_eHQ = Vec2{ 11,11 };
+		if (map->Get(Vec2{ 0,0 }) == Tile::eActive)
+			swap(m_mHQ, m_eHQ);
 	}
 
 	vector<pair<Vec2, Vec2>>&& GetBridges(Tile type) noexcept {
 		this->Clear();
 
+		Vec2 start{ type == Tile::eActive ? m_eHQ : m_mHQ};
+
+		this->Dfs(start, Vec2{ -1,-1 }, type);
 		for (int y = 0; y < Map::SIZE; y++) {
 			for (int x = 0; x < Map::SIZE; x++) {
 				Vec2 v{ x, y };
@@ -459,6 +484,7 @@ private:
 	int		m_timer;
 
 	Map* m_map;
+	Vec2 m_mHQ, m_eHQ;
 };
 
 
@@ -486,7 +512,27 @@ public:
 		this->Dfs(bridge, Vec2{-1,-1}, score, type);
 		return score;
 	}
-	
+	void ChangeTilesAfterTheBridge(Vec2 start, Vec2 bridge, Tile from, Tile to) noexcept {
+		int score{ 0 };
+		auto&map{ m_map };
+		auto&uManager{ m_uManager };
+		// CC before bridge to mark as visited and skip it later
+		auto pred = [&bridge, &from, &map](Vec2 v) { return  (!(v == bridge) && from == map->Get(v)); };
+		auto calc = [](Vec2 v) { return 1; }; // do nothing
+		// remove overhead from score caculation
+		this->Dfs<decltype(pred), decltype(calc)>(start, score, pred, calc);
+		auto modify = [&bridge, &from, &to, &map, &uManager](Vec2 v) {
+			bool is{ from == map->Get(v) };
+			if (is) {
+				map->m_map[v.y][v.x] = to;
+				// remove units from manager!
+				uManager->MarkUnitForRemove(v);
+			}
+			return is;
+		};
+		this->Dfs<decltype(modify), decltype(calc)>(start, score, modify, calc);
+		uManager->RemoveMarkedUnits();
+	}
 	/* used to calculate CC */
 	template <class Pred, class Calc>
 	void Dfs(Vec2 v, int& counter, Pred pred, Calc calcFn) {
@@ -572,22 +618,25 @@ public:
 	}
 
 	void Update() noexcept {
-		auto& buildings{ m_data->m_bManager.m_buildings };
-		auto hq = find_if(buildings.begin(), buildings.end(), [](auto&b) {
-			return b.IsMy() && b.IsHQ();
-		});
-		assert(hq != buildings.end());
-		m_mHQ = hq->m_pos;
-		//--
-		hq = find_if(buildings.begin(), buildings.end(), [](auto&b) {
-			return (!b.IsMy() && b.IsHQ());
-		});
-		assert(hq != buildings.end());
-		m_eHQ = hq->m_pos;
+		m_mHQ = Vec2{ 0,0 }, m_eHQ = Vec2{ 11,11 };
+		if (m_data->m_map.Get(Vec2{ 0,0 }) == Tile::eActive)
+			swap(m_mHQ, m_eHQ);
 
 		Bridges bridge(&m_data->m_map);
 		m_eBridges = bridge.GetBridges(Tile::eActive);
 		m_mBridges = bridge.GetBridges(Tile::mActive);
+
+		cerr << "Enemy Bridges:" << endl;
+		for (auto&[from, to] : m_eBridges) {
+			cerr << to << " ";
+		}
+		cerr << endl;
+
+		cerr << "My Bridges:" << endl;
+		for (auto&[from, to] : m_mBridges) {
+			cerr << to << " ";
+		}
+		cerr << endl;
 	}
 
 	void Clear() noexcept {
@@ -597,7 +646,6 @@ public:
 		m_eBridges.clear();
 		m_search.Clear();
 	}
-
 	// invalid pair {-1,-1}
 	pair<int, int> MinMaxLevelAround(Vec2 p, Tile type) const noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
@@ -845,7 +893,7 @@ public:
 						bool isDangerous{ enemy.CanCreateUnit(3, 1) };
 						score += sd::activeTileScore;
 						if (isDangerous || eMaxLevel > unit.m_level) {
-							if (eMaxLevel < 3)  score += sd::costByLevel[3] / 2; // he will have to build LEVEL 3 unit! So it' quite good!
+							if (eMaxLevel < 3)  score += sd::costByLevel[3-1] / 2; // he will have to build LEVEL 3 unit! So it' quite good!
 							else score -= worth;
 						}
 						
@@ -918,6 +966,7 @@ public:
 						}
 						if (isBridge) {
 							addForBridge();
+							score -= sd::activeTileScore; //already added in AddForBridge
 							cerr << "Trying to break enemy bridge: "
 								<< score << " score for " << dest << endl;
 						}
@@ -949,15 +998,13 @@ public:
 	3. choose with max score
 	4. add to answer array
 	*/
-	void Move() noexcept {
+	void Move() {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
-
 		cerr << "Enemy Bridges:" << endl;
-		for (auto& [from,to] : m_eBridges) {
+		for (auto&[from, to] : m_eBridges) {
 			cerr << to << " ";
 		}
 		cerr << endl;
-
 		auto& map{ m_data->m_map };
 		auto& uManager{ m_data->m_uManager };
 		auto& units{ uManager.m_units };
@@ -974,10 +1021,12 @@ public:
 					auto neighbor{ unit.m_pos + sh };
 					
 					if (!IsValid(neighbor)) continue;
-
+					auto occupant { uManager.GetUnitAt(neighbor) };
+					bool isOccupiedByEnemy{ occupant.has_value() && !occupant->IsMy() };
 					if ( map.Get(neighbor) != Tile::blocked && //not blocked
-						m_takenPositions.count(neighbor) == 0 ) // isn't occupied  
-					{ // calculate score:
+						(!occupant.has_value() || isOccupiedByEnemy) //nobody or enemy
+						//	m_takenPositions.count(neighbor) == 0 ) // isn't occupied  
+					) { // calculate score:
 						targets.emplace_back(neighbor, this->ScoreMove(neighbor, unit));
 					}
 				}
@@ -1009,61 +1058,14 @@ public:
 		}
 	}
 
-	///TODO: add training for defence to interupt path of enemy
-	/* TRAINING:
-	Goal: form pairs { score, <pos, level> }
-	Find all:
-		- my empty boarder tiles 
-		- my boarder tiles neighbors ( eActive, eInactive )
-		- my bridges check for reinforcement
-	Foreach my tile check boarder tiles and give score:
-		+ tile is enemy HQ [max score]
-		+ tile is with opponent's unit (weaker) [unit's cost + default enemy tile score]
-		+ tile is enemy Bridge [number of opponent tiles + units cost if there are any in connected component]
-		- tile is next to my Bridge [can reinforce bridge? YES = |CC|  + units cost there, NO = default tile score + 1] / 2
-		+ tile is next to my inactive [|CC|] // build bridge 
-		+ tile is opponents active [3] // default enemy tile score 
-		+ tile is opponents inactive [2]
-		+ else [1]
-	Sort by score (if is equel, use distance to enemy HQ)
-	While can train => train
-	*/
-	void Train() noexcept {
-		auto tiles{ this->GetBoarderTiles() };
-		// remove positions if there is already unit to move there.
-		tiles.erase(
-			remove_if(tiles.begin(), tiles.end(), [this](auto& p) {
-				return (m_takenPositions.find(p.first) != m_takenPositions.end());
-			}),
-			tiles.end()
-		);
-		this->AssignScore(tiles);
-		// While can train = > train
-//		for (auto&[p, s] : tiles) {
-//			cerr << "[ " << p << " " << s << " ], ";
-//		}
-//		cerr << endl;
-		//---
-		auto& me{ m_data->m_me };
-		auto& map{ m_data->m_map };
+	void Train() {
+		this->DefendBridges();
+		this->AttackEnemy();
+	}
 
-		CCSearch cc(&map, &m_data->m_uManager, &m_data->m_bManager);
-//		cerr << "me0: " << me.m_gold << " " << me.m_income << " " << me.m_upkeep << endl;
-		for (auto&tile : tiles)
-		{ // TODO: change to DFS for mInactive!
-			int income{ map.Get(tile.first) == Tile::mActive ? 0 : 1 };
-			if (income) {
-				cc.Dfs(tile.first, income, Tile::mInactive);
-				cc.Clear();
-			}
-			if (me.CanCreateUnit(1, income)) {
-				me.CreateUnit(1, income);
-				m_takenPositions.insert(tile.first);
-				m_answer.emplace_back(commands::Train(1, tile.first));
-//				cerr << tile.first << " me: " << me.m_gold << " " << me.m_income << " " << me.m_upkeep << endl;
-			}
-			else break;
-		}
+	void Build() {
+		/*auto& bManager{ m_data->m_bManager };
+		for(auto& mine : bManager)*/
 	}
 
 	void Print() {
@@ -1113,91 +1115,8 @@ private:
 		return boarderTiles;
 	}
 
-	void AssignScore(vector<pair<Vec2, int>> & boarderTiles) noexcept {
-		for (auto & [pos,score] : boarderTiles) {
-			score = this->EvalScore(pos);
-		}
-		sort(boarderTiles.begin(), boarderTiles.end(), [this](auto&lsh, auto&rsh) {
-			if (lsh.second == rsh.second) {
-				return lsh.first.Distanse(this->m_eHQ) < rsh.first.Distanse(this->m_eHQ);
-			}
-			else return lsh.second > rsh.second;
-		});
-	}
-	
-	int EvalScore(Vec2& pos) noexcept {
-		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
-
-		auto& map{ m_data->m_map };
-		auto& bManager{ m_data->m_bManager };
-		auto& uManager{ m_data->m_uManager };
-
-		auto score{ sd::defaultScore };
-
-		auto optUnit{ m_data->m_uManager.GetUnitAt(pos) };
-		
-		bool isEnemyBridge{
-			find_if(m_eBridges.begin(), m_eBridges.end(), [&pos](auto&b) {
-				return pos == b.second;
-			}) != m_eBridges.end()
-		};
-
-		if (m_eHQ == pos) {
-			return sd::mxScore;
-		}
-		else if (optUnit.has_value()) {
-			// tile is with opponent's unit (weaker or equel in level)
-			// [unit's cost + default enemy tile score]
-			auto& unit{ optUnit.value() };
-			score = sd::costByLevel[unit.m_level - 1] + sd::activeTileScore;
-		}
-		else if (map.Get(pos) == Tile::eActive) {
-			score = sd::activeTileScore;
-		}
-		else if (map.Get(pos) == Tile::eInactive) {
-			score = sd::inactiveTileScore;
-		}
-		// bridges:
-		CCSearch cc(&map, &uManager,&bManager);
-		if (isEnemyBridge) {
-			// tile is enemy Bridge. Score: 
-			// [number of opponent tiles]
-			// [units cost if there are any in connected component]
-			score = max(score, cc.GetScoreAfterBridge(m_eHQ, pos, Tile::eActive));
-			cc.Clear();
-		}
-		// TODO: 
-		// check all neigbors for my bridge 
-		// if we has bridge => reinforce!
-		
-		//for (auto&sh : shift) {
-		//	auto neighbor{ sh + pos };
-		//	if (!IsValid(neighbor)) continue;
-		//	auto it = find_if(allyBridges.begin(), allyBridges.end(), [&neighbor,&pos](auto&b) {
-		//		return neighbor == b.second;// neighbor is bridge
-		//	});
-		//	if (it != allyBridges.end() ) {
-		////&????		// make sure we didn't come from this bridge(@neighbor) to @pos
-		//	
-		//		score = max(score, ccsearch.GetScoreAfterBridge(m_mHQ, neighbor, Tile::mActive) / 2);
-		//	}
-		//}
-
-		// look for inactive component
-		// how much we will get if activate?
-		for (auto&sh : shift) {
-			auto neighbor{ sh + pos };
-			if (!IsValid(neighbor) || map.Get(neighbor) != Tile::mInactive) continue;
-			int inactiveCount{ 0 };
-			cc.Dfs(neighbor, inactiveCount, Tile::mInactive);
-			cc.Clear();
-			score = max(score, inactiveCount);
-		}
-		return score;
-	}
-
 	// CALL ONLY AFTER MOVE!
-	void DefendBridges() noexcept {
+	void DefendBridges() {
 		auto uManager{ m_data->m_uManager };
 		auto bManager{ m_data->m_bManager };
 		auto me{ m_data->m_me };
@@ -1213,9 +1132,9 @@ private:
 
 		cerr << "Bridge's worth: [ ";
 		for (const auto&[worth, bridge] : values) {
-			cerr << "[" << bridge << ": " << worth << "];  ";
+			cerr << "[" << bridge << ": " << worth << "]; ";
 		}
-		cerr << endl;
+		cerr << " ]"<< endl;
 
 		for (const auto&[worth, bridge ]: values)
 		{ 
@@ -1237,18 +1156,20 @@ private:
 			auto treats{ this->AllNeighbors(bridge, [&uManager,&minLevelTreat](Vec2 pos) {
 				auto optUnit = uManager.GetUnitAt(pos);
 				return  (optUnit.has_value()
-					&& optUnit.value().m_level >= minLevelTreat
-					&& optUnit.value().m_owner == 0);
-			}) };
+					&& optUnit->m_level >= minLevelTreat
+					&& optUnit->m_owner == 1); // 1 is id of enemy
+				}) 
+			};
 
 			int trainingCost{ 0 };
 			vector<int> trainLevels;
 			trainLevels.reserve(treats.size());
 			for (Vec2 p : treats) {
-				auto level { optUnit.value().m_level };
+				auto enemyAround = uManager.GetUnitAt(p);
+				auto level { enemyAround->m_level };
 				int needLevelForKill{ this->IsProtected(p) ? 3 : min(level+1, 3) };
 				trainLevels.emplace_back(needLevelForKill);
-				trainingCost += sd::costByLevel[needLevelForKill];
+				trainingCost += sd::costByLevel[needLevelForKill-1];
 			}
 
 			const int managableGold{ 9 };
@@ -1256,20 +1177,25 @@ private:
 				&& (worth + managableGold >= trainingCost) 
 				&& !trainLevels.empty()
 			) { // we can nullify all treat by training!
-				cerr << "Train units: ";
+				cerr << "Train units around the bridge : ";
 				for (size_t i = 0; i < trainLevels.size(); i++) {
+					cerr << treats[i] << "; ";
+					if (trainLevels[i] > 1) {
+						// remove enemy unit from map
+						uManager.MarkUnitForRemove(treats[i]);//if there is any
+					}
 					me.CreateUnit(trainLevels[i], 1);
-					m_takenPositions.insert(treats[i]);
+				//	m_takenPositions.insert(treats[i]);
 					m_answer.emplace_back(commands::Train(trainLevels[i], treats[i]));
 					// UPDATE MAP & UNITS
 					map.m_map[treats[i].y][treats[i].x] = Tile::mActive;
 					uManager.AddUnit(0, -1, trainLevels[i], treats[i]); // -1 is undef id
-					cerr << treats[i] <<"; ";
 				}
 				cerr << endl;
+				uManager.RemoveMarkedUnits();
 			}
 			else if(!isProtected && levelOnBridge < 2) {// we can't nullify or it's not worth money!
-				auto optTowerPos{ GetPositionForTowerAround(bridge) };
+				auto optTowerPos{this->GetPositionForTowerAround(bridge) };
 				const int minLevelDefender{ 2 };
 				if (optTowerPos.has_value() && me.CanCreateBuilding(sd::towerCost)) {
 					me.CreateBuilding(sd::towerCost, 0);
@@ -1291,6 +1217,203 @@ private:
 			// else if protected and no need to add unit 2 or tower!
 		}
 	}
+	// CALL ONLY AFTER DEFEND!
+	void AttackEnemy() {
+		//declaration:
+		auto uManager{ m_data->m_uManager };
+		auto bManager{ m_data->m_bManager };
+		auto me{ m_data->m_me };
+		auto map{ m_data->m_map };
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		//get tiles on the boarder
+		auto tiles{ this->GetBoarderTiles() };
+		// remove positions if there is already unit to move there.
+		tiles.erase(
+			remove_if(tiles.begin(), tiles.end(), [this](auto& p) {
+				return (m_takenPositions.find(p.first) != m_takenPositions.end());
+			}),
+			tiles.end()
+		);
+		// sort enemy bridges by score, keep position
+		vector<pair<int, Vec2>> bridges;
+		bridges.reserve(m_eBridges.size());
+		for (auto&[from, bridge] : m_eBridges) {
+			m_search.Clear();
+			bridges.emplace_back(
+				m_search.GetScoreAfterBridge(m_eHQ, bridge, Tile::eActive),
+				bridge
+			);
+		}
+		sort(bridges.rbegin(), bridges.rend());
+
+		cerr << "Enemy bridge's worth: [ ";
+		for (const auto&[worth, bridge] : bridges) {
+			cerr << "[" << bridge << ": " << worth << "];  ";
+		}
+		cerr << endl;
+
+		// Find all intersections where:
+		// bridges INTERSECT tilesOnBoarder
+		vector<pair<int , Vec2>> bridgesUnderAttack;
+		bridgesUnderAttack.reserve(10);
+		for (auto& [score, bridge] : bridges) {
+			for (auto& [boarderTile, score] : tiles) {
+				if (bridge == boarderTile) { // we can attack bridge
+					bridgesUnderAttack.emplace_back(score, bridge);
+					break;
+				}
+			}
+		}
+		// solve bridges that we can attack in online style (update map & unit & building data after each case):
+		// NOTE: It's just erase connected component after the bridge.
+		// It doesn't update/search for new bridges after removing curent one
+		vector<Vec2> solved;
+		for (const auto& [worth, bridge] : bridgesUnderAttack) {
+			// i think it's important to erase bridges where |CC| >= 3
+			// it also can be unit
+			const int minWorth{ 3 }; 
+			if (worth < minWorth) {
+				cerr << bridge << " is worthless enemy bridge!" << endl;
+				break;
+			}
+			if (map.Get(bridge) == Tile::eInactive) {
+				solved.emplace_back(bridge);
+				continue;
+			}
+
+			auto optUnit{ uManager.GetUnitAt(bridge) };
+			int levelOnBridge{ (optUnit.has_value() ? optUnit.value().m_level : 0) };
+			bool isProtected{ this->IsProtected(bridge) };
+			int attackerLevel{ isProtected ? 3 : min(levelOnBridge + 1, 3) };
+
+			int cost{ sd::costByLevel[attackerLevel - 1] };
+			int managableGold{ sd::costByLevel[0] - minWorth }; // if can solve with lvl 1 UNit
+			
+			if (worth + managableGold >= cost && me.CanCreateUnit(attackerLevel, 1)) {
+				solved.emplace_back(bridge);
+				me.CreateUnit(attackerLevel, 1);
+				m_answer.emplace_back(commands::Train(attackerLevel, bridge));
+				// UPDATE MAP & UNITS
+				map.m_map[bridge.y][bridge.x] = Tile::mActive;
+				uManager.AddUnit(0, -1, attackerLevel, bridge); // -1 is undef id
+				cerr << "Attack bridge by unit: " << bridge << endl;
+				// MAKE INACTIVE EVERY TILE AFTER BRIDGE!
+				m_search.Clear();
+				m_search.ChangeTilesAfterTheBridge(m_eHQ, bridge, Tile::eActive, Tile::eInactive);
+			}
+		}
+
+		// Score-Position-COST
+		vector<tuple<int, Vec2, int>> result;
+		result.reserve(tiles.size());
+
+		const int negInfScore = -1'000'000'000;
+		// solve offline tiles with precalculation of all tiles:
+		for (auto& [tile,score] : tiles)
+		{ // check whether we already have solved this one (if it was bridge)
+			if (!solved.empty()) {
+				auto solvedIt = find_if(solved.begin(), solved.end(), [&tile](auto&pos) { return pos == tile; });
+				if (solvedIt != solved.end()) {
+					score = negInfScore; // to not chose this tile for the training command
+					result.emplace_back(score, tile, 0); // cost doesn't matter!
+					continue;
+				}
+			}
+			if (m_eHQ == tile) {
+				score = sd::mxScore;
+				result.emplace_back(score, tile, sd::costByLevel[0]);
+				continue;
+			}
+
+			auto optEnemy{ uManager.GetUnitAt(tile) };
+			auto optBuilding{ bManager.GetBuildingAt(tile) };
+			bool isProtected{ this->IsProtected(tile) };
+			int enemyLevel{ optEnemy.has_value() ? optEnemy->m_level: 0 };
+			int attackerLevel{ isProtected ? 3 : min(enemyLevel + 1, 3) };
+			//check if it's bridge
+			auto bridgeIt = find_if(bridges.begin(), bridges.end(), [&tile](auto & b) {
+				return b.second == tile ; 
+			});
+			if (bridgeIt != bridges.end()) {
+				score = bridgeIt->first;
+				result.emplace_back(score, tile, sd::costByLevel[attackerLevel-1]);
+				continue;
+			}
+			// score all other cases:
+			score = sd::defaultScore;
+
+			if (map.Get(tile) == Tile::eActive) {
+				score = sd::activeTileScore;
+			}
+			else if (map.Get(tile) == Tile::eInactive) {
+				score = sd::inactiveTileScore;
+			}
+
+			if (map.Get(tile) != Tile::neutral) {
+				if (optBuilding.has_value()) {
+					score += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+				}
+				else if (enemyLevel) {
+					score += sd::costByLevel[enemyLevel - 1];
+				}
+			}
+			// look for inactive component around our tile
+			// how much we will get if activate?
+			for (auto&sh : shift) {
+				auto neighbor{ sh + tile };
+				if (!IsValid(neighbor) || map.Get(neighbor) != Tile::mInactive) continue;
+				auto pred = [&map](Vec2 p){
+					return (map.Get(p) == Tile::mInactive);
+				};
+				auto calc = [&bManager](Vec2 p) {
+					auto optBuilding{ bManager.GetBuildingAt(p) };
+					int result { 0 }; 
+					if (optBuilding.has_value()) {
+						result += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+					}
+					return result;
+				};
+				m_search.Clear();
+				m_search.Dfs<decltype(pred),decltype(calc)>(neighbor, score, pred, calc);
+			}
+
+			result.emplace_back(score, tile, sd::costByLevel[attackerLevel - 1]);
+		}
+		// sort by (score-cost)
+
+		auto Score		= [](auto&value) { return get<0>(value); };
+		auto Position	= [](auto&value) { return get<1>(value); };
+		auto Cost		= [](auto&value) { return get<2>(value); };
+
+		Vec2 eHQ{ m_eHQ };
+		sort(result.begin(), result.end(), [&Score,&Position,&Cost,&eHQ](auto& lsh, auto& rsh) {
+			/*if (Score(lsh) - Cost(lsh) == Score(rsh) - Cost(rsh)) { 
+				return ( Position(lsh).Distanse(eHQ) < Position(rsh).Distanse(eHQ) );
+			}*/
+			return (Score(lsh) - Cost(lsh) > Score(rsh) - Cost(rsh));
+		});
+
+		// Start Attack!
+		cerr << "Attackers precalc data: ";
+		for (const auto &[score, position, cost] : result) {
+			cerr << "[" << score << " " << position << " " << cost << "]; ";
+			int level{ 1 };
+			for (int i = 1; i <= 3; i++) {
+				int x{ sd::costByLevel[i-1] };
+				if (cost == x) {
+					level = i;
+					break;
+				}
+			}
+			//TODO: calculate income later
+			if (me.CanCreateUnit(level, 1)) { 
+				me.CreateUnit(level, 1);
+				m_answer.emplace_back(commands::Train(level, position));
+			}
+		}
+		cerr << endl;
+	}
+
 private:
 	Data* m_data;
 	vector<pair<Vec2, Vec2> > m_mBridges, m_eBridges;
@@ -1316,6 +1439,7 @@ struct Game {
 
 			m_commander.Move();
 			m_commander.Train();
+			m_commander.Build();
 			m_commander.Print();
 		}
 	}
