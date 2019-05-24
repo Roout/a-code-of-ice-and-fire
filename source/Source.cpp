@@ -971,7 +971,10 @@ public:
 					}
 					else {
 						score += sd::activeTileScore;
-						if (canKillMyUnit) {
+						if (unit.m_level == 1) { // not important units
+							//do nothing
+						}
+						else if (canKillMyUnit) {
 							score -= worth;
 						} //TODO: smth shady is going on there! CHANGE!
 						else if (canCreateBetterUnit) {// we force to create unit with greater strength
