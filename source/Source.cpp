@@ -672,19 +672,29 @@ public:
 	optional<Vec2> GetPositionForTowerAround(Vec2 p) const noexcept{
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		auto& map{ m_data->m_map };
+		auto& uManager{ m_data->m_uManager };
+		auto NoEnemyLevelThree = [&uManager](Vec2 v) {
+			auto opt{ uManager.GetUnitAt(v) };
+			return !(opt.has_value() && opt->m_level == 3 && !opt->IsMy());
+
+		};
 		for (auto& sh : shift) {
 			auto neighbor{ sh + p };
 			if (IsValid(neighbor)
 				&& map.Get(neighbor) == Tile::mInactive 
 				&& !m_data->m_bManager.GetBuildingAt(neighbor).has_value()
-				&& !m_data->m_uManager.GetUnitAt(neighbor).has_value()
+				&& !uManager.GetUnitAt(neighbor).has_value()
 			) {
-				return make_optional(neighbor);
+				bool isSafe{ this->AllNeighbors<decltype(NoEnemyLevelThree)>(neighbor, NoEnemyLevelThree).empty() };
+
+				// if there aren't any enemy units level 3 around!
+				if(isSafe)
+					return make_optional(neighbor);
 			}
 		}
 		if (!m_data->m_bManager.GetBuildingAt(p).has_value()
 			&& !m_data->m_uManager.GetUnitAt(p).has_value())
-		{
+		{ // it's already checked for @p that htere is no level 3 enemy unit around!
 			return make_optional(p);
 		}
 		return nullopt;
@@ -842,16 +852,17 @@ public:
 				bool isBridge{ this->IsBridge(dest, Tile::mActive) };
 				if (hasActiveEnemyNeighbor && isBridge) {
 					bool isDangerous{ this->CanCreateUnit(false, min(unit.m_level + 1, 3), 1) };
-					if (isDangerous || eMaxLevel > unit.m_level) {
+					if (isDangerous || eMaxLevel > unit.m_level || eMaxLevel == 3) {
 						score = mn;
 						if (unit.m_pos == dest) 
 							score = mn + 1; // {-999} to not move if all score around are @mn {-1000}
-						cerr << "Expect to train\build def at " << dest << endl;
+						cerr << "Expect to train|build def at " << dest << endl;
 					}
 					else { 
 						// CC ( units +  buildings + visits) which can be lost with destroyed bridge!
 						m_search.Clear();
 						score = m_search.GetScoreAfterBridge(m_mHQ, dest, Tile::mActive);
+						if (unit.m_pos == dest) score -= sd::costByLevel[unit.m_level - 1]; // don't include unit
 						cerr << "Trying to save |CC| with size of " << score << " at " << dest << endl;
 					}
 				}
@@ -892,7 +903,7 @@ public:
 					else {
 						bool isDangerous{ enemy.CanCreateUnit(3, 1) };
 						score += sd::activeTileScore;
-						if (isDangerous || eMaxLevel > unit.m_level) {
+						if (isDangerous || eMaxLevel == unit.m_level) {
 							if (eMaxLevel < 3)  score += sd::costByLevel[3-1] / 2; // he will have to build LEVEL 3 unit! So it' quite good!
 							else score -= worth;
 						}
@@ -914,6 +925,7 @@ public:
 						}
 						if (isBridge) {
 							addForBridge();
+							score -= sd::towerCost; // to not calculate tower 2 times
 							cerr << "Trying to break enemy bridge with tower: " 
 								 << score << " score for " << dest << endl;
 						}
@@ -923,18 +935,18 @@ public:
 					}
 				}
 				else {
-					int	minReqLevelToKill{ min(unit.m_level + 1, 3) };
+					int	minReqLevelToKill{ min(unit.m_level + 1, 3) }; // level requirement to kill my unit
 					bool canCreateBetterUnit{ enemy.CanCreateUnit(minReqLevelToKill, 1) };
-					bool canKillMyUnit{ eMaxLevel > unit.m_level };
+					bool canKillMyUnit{ eMaxLevel > unit.m_level || eMaxLevel == 3 };
 
 					if (myInactiveNeighbor.has_value()) {
 						AddMyInactiveComponent(score);
 					}
 
 					if (optUnit.has_value()) {
-						auto enemyLevel{ optUnit.value().m_level };
+						auto enemyLevel{ optUnit->m_level };
 						
-						if (enemyLevel < unit.m_level) {
+						if (enemyLevel < unit.m_level || unit.m_level == 3) {
 							score = sd::activeTileScore;
 							if (canKillMyUnit) {
 								score -= worth;
@@ -945,6 +957,7 @@ public:
 							
 							if (isBridge) {
 								addForBridge();
+								score -= sd::activeTileScore; //is calc again in @addForBridge();
 								cerr << "Trying to break enemy bridge: "
 									<< score << " score for " << dest << endl;
 							}
@@ -960,7 +973,7 @@ public:
 						score += sd::activeTileScore;
 						if (canKillMyUnit) {
 							score -= worth;
-						}
+						} //TODO: smth shady is going on there! CHANGE!
 						else if (canCreateBetterUnit) {// we force to create unit with greater strength
 							score += sd::costByLevel[minReqLevelToKill - 1] / 2;
 						}
@@ -977,6 +990,7 @@ public:
 				}
 			}
 		}; break;
+		//used when map hasn't updated yet (not it should by hand but not sre it works good)
 		case Tile::eInactive: {
 			score = sd::inactiveTileScore;
 			if(myInactiveNeighbor.has_value())
@@ -1156,22 +1170,23 @@ private:
 			int levelOnBridge{ (optUnit.has_value() ? optUnit.value().m_level : 0) };
 			bool isProtected { this->IsProtected(bridge) };
 			int minLevelTreat { isProtected ? 3 : min( levelOnBridge + 1, 3) };
-
-//			bool canCreateTreat{ this->m_data->m_enemy.CanCreateUnit(minLevelTreat, 1) };
+//can be oprimized using lambda as modifier for @trainLevels vector below
 			auto treats{ this->AllNeighbors(bridge, [&uManager,&minLevelTreat](Vec2 pos) {
 				auto optUnit = uManager.GetUnitAt(pos);
 				return  (optUnit.has_value()
 					&& optUnit->m_level >= minLevelTreat
-					&& optUnit->m_owner == 1); // 1 is id of enemy
+					&& !optUnit->IsMy()); // 1 is id of enemy
 				}) 
 			};
 
 			int trainingCost{ 0 };
+			int maxLevelTreat{ 0 };
 			vector<int> trainLevels;
 			trainLevels.reserve(treats.size());
 			for (Vec2 p : treats) {
 				auto enemyAround = uManager.GetUnitAt(p);
 				auto level { enemyAround->m_level };
+				maxLevelTreat = max(level, maxLevelTreat);
 				int needLevelForKill{ this->IsProtected(p) ? 3 : min(level+1, 3) };
 				trainLevels.emplace_back(needLevelForKill);
 				trainingCost += sd::costByLevel[needLevelForKill-1];
@@ -1181,7 +1196,7 @@ private:
 			if (me.CanCreateUnits(trainLevels) 
 				&& (worth + managableGold >= trainingCost) 
 				&& !trainLevels.empty()
-			) { // we can nullify all treat by training!
+			) { // we can nullify all treats by training!
 				cerr << "Train units around the bridge : ";
 				for (size_t i = 0; i < trainLevels.size(); i++) {
 					cerr << treats[i] << "; ";
@@ -1189,6 +1204,8 @@ private:
 						// remove enemy unit from map
 						uManager.MarkUnitForRemove(treats[i]);//if there is any
 					}
+					if (!me.CanCreateUnit(trainLevels[i], 1))
+						cerr << "ERROR: CAN'T CREATE" << endl;
 					me.CreateUnit(trainLevels[i], 1);
 				//	m_takenPositions.insert(treats[i]);
 					m_answer.emplace_back(commands::Train(trainLevels[i], treats[i]));
@@ -1199,7 +1216,7 @@ private:
 				cerr << endl;
 				uManager.RemoveMarkedUnits();
 			}
-			else if(!isProtected && levelOnBridge < 2) {// we can't nullify or it's not worth money!
+			else if(!isProtected && levelOnBridge < 2 && maxLevelTreat != 3) {// we can't nullify or it's not worth money!
 				auto optTowerPos{this->GetPositionForTowerAround(bridge) };
 				const int minLevelDefender{ 2 };
 				if (optTowerPos.has_value() && me.CanCreateBuilding(sd::towerCost)) {
@@ -1320,7 +1337,7 @@ private:
 				auto solvedIt = find_if(solved.begin(), solved.end(), [&tile](auto&pos) { return pos == tile; });
 				if (solvedIt != solved.end()) {
 					score = negInfScore; // to not chose this tile for the training command
-					result.emplace_back(score, tile, 0); // cost doesn't matter!
+					result.emplace_back(score, tile, 1'000'000'000); // cost doesn't matter!
 					continue;
 				}
 			}
