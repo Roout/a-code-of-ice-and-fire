@@ -1477,7 +1477,9 @@ private:
 					break;
 				}
 			}
-			if (level == 3 && (me.m_gold < 45 || me.m_income < 30) ) continue;
+			// to have opportunity to attack
+			bool isEnough{ (me.m_gold < 45 || me.m_income < 30) || me.m_gold >= 90 };
+			if (level == 3 && isEnough) continue;
 			//TODO: calculate income later
 			if (me.CanCreateUnit(level, 1)) { 
 				me.CreateUnit(level, 1);
