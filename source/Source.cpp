@@ -621,6 +621,52 @@ public:
 		}
 	}
 
+	// bfs: self-clearing
+	vector<pair<Vec2, int>> GetBoarderTiles(Tile type) {
+
+		this->Clear();
+
+		auto	mHQ = Vec2{ 0,0 }, 
+				eHQ = Vec2{ 11,11 };
+		if (m_map->Get(Vec2{ 0,0 }) == Tile::eActive)
+			swap(mHQ, eHQ);
+
+		Vec2 HQ{ type == Tile::mActive? mHQ : eHQ};
+	
+		m_visited[mHQ.y][mHQ.x] = true;
+
+		vector<pair<Vec2, int>> boarderTiles;
+		boarderTiles.reserve(10); //to avoid allocations
+
+		queue<Vec2> Q;
+		Q.push(HQ);
+
+		while (!Q.empty()) {
+			auto top{ Q.front() };
+			Q.pop();
+
+			for (auto& sh : m_shift) {
+				auto tile{ top + sh };
+				if (IsValid(tile) &&
+					!m_visited[tile.y][tile.x] &&
+					m_map->Get(tile) != Tile::blocked)
+				{
+					m_visited[tile.y][tile.x] = true;
+
+					if (m_map->Get(tile) == type) {
+						Q.push(tile);
+					}
+					else {
+						boarderTiles.emplace_back(tile, 0);
+					}
+				}
+			}
+		}
+
+		return boarderTiles;
+	}
+
+
 	// Dijkstra: has error when we're removing towers! 
 	// protected tiles still calculated!
 	// ****
@@ -1159,7 +1205,7 @@ public:
 	4. add to answer array
 	*/
 	void Move() {
-		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {0, -1}, {0, 1}, {1, 0} };
 
 		auto& map{ m_data->m_map };
 		auto& uManager{ m_data->m_uManager };
@@ -1223,14 +1269,24 @@ public:
 					//CAN BE ERROR IF INVALID TRAINING (THERE IS UNIT WITH LEVEL > MY LEVEL)
 					// i.g. all scores are -1000, will it  choose the tile close to headquaters?? 
 					map.m_map[bestTarget->first.y][bestTarget->first.x] = Tile::mActive;
-					m_takenPositions.insert(bestTarget->first);
+					//m_takenPositions.insert(bestTarget->first);
 					unit.m_pos = bestTarget->first; // update position
 				}
 			}
 		}
 	}
 
+	void AttackChain() {
+		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
+		auto& me{ m_data->m_me };
+		auto& map{ m_data->m_map };
+
+	//	for()
+	}
+
 	void Train() {
+		this->AttackChain();
 		this->DefendBridges();
 		this->AttackEnemy();
 	}
@@ -1246,6 +1302,9 @@ public:
 		if (!me.CanCreateBuilding(mineCost)) return;
 
 		auto mineSpots{ this->GetMyMineSpots() };
+		
+		if (me.m_gold < 50 || myMines.size() >= 3) return;
+
 		sort(mineSpots.begin(), mineSpots.end(), [this](const Mine& lsh,const Mine& rsh) {
 			return lsh.m_pos.Distanse(m_mHQ) < rsh.m_pos.Distanse(m_mHQ);
 		});
@@ -1271,45 +1330,7 @@ public:
 		cout << endl;
 	}
 private:
-	// bfs
-	vector<pair<Vec2,int>> GetBoarderTiles() const noexcept {
-		array<Vec2, 4> shift { Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
-		auto& map{ m_data->m_map };
-		
-		bool visited[Map::SIZE][Map::SIZE] = {};
-		visited[m_mHQ.y][m_mHQ.x] = true;
-
-		vector<pair<Vec2, int>> boarderTiles;
-		boarderTiles.reserve(10); //to avoid allocations
-
-		queue<Vec2> Q;
-		Q.push(m_mHQ);
-
-		while (!Q.empty()) {
-			auto top{ Q.front() };
-			Q.pop();
-
-			for (auto& sh : shift) {
-				auto tile{ top + sh };
-				if (IsValid(tile) && 
-					!visited[tile.y][tile.x] && 
-					map.Get(tile) != Tile::blocked )
-				{
-					visited[tile.y][tile.x] = true;
-					
-					if (map.Get(tile) == Tile::mActive) {
-						Q.push(tile);
-					}
-					else {
-						boarderTiles.emplace_back(tile, 0);
-					}
-				}
-			}
-		}
-
-		return boarderTiles;
-	}
-
+	
 	// CALL ONLY AFTER MOVE!
 	void DefendBridges() {
 		auto& uManager{ m_data->m_uManager };
@@ -1335,7 +1356,7 @@ private:
 		{ 
 			const int minWorth{ 3 }; // i think it's good to protect at least 2 tiles!
 			if (worth < minWorth) {
-				cerr << bridge<< " is worthless bridge!" << endl;
+				cerr << bridge << "with worth: "<< worth <<" is worthless bridge!" << endl;
 				break;
 			}
 			// make clear treats:
@@ -1431,9 +1452,9 @@ private:
 		auto& bManager{ m_data->m_bManager };
 		auto& me{ m_data->m_me };
 		auto& map{ m_data->m_map };
-		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {0, -1}, {0, 1}, {1, 0} };
 		//get tiles on the boarder
-		auto tiles{ this->GetBoarderTiles() };
+		auto tiles{ m_search.GetBoarderTiles(Tile::mActive) };
 
 		//// remove positions if there is already unit to move there.
 		//tiles.erase(
@@ -1461,7 +1482,7 @@ private:
 		}
 		cerr << endl;
 
-		// Find all intersections where:
+		// Find all intersections (bridges under attack) where:
 		// bridges INTERSECT tilesOnBoarder
 		vector<pair<int , Vec2>> bridgesUnderAttack;
 		bridgesUnderAttack.reserve(10);
@@ -1496,9 +1517,11 @@ private:
 			int attackerLevel{ isProtected ? 3 : min(levelOnBridge + 1, 3) };
 
 			int cost{ sd::costByLevel[attackerLevel - 1] };
-			int managableGold{ 5 /* sd::costByLevel[0] - minWorth*/ }; // if can solve with lvl 1 UNit
+			int managableGold{ 0 /* sd::costByLevel[0] - minWorth*/ }; // if can solve with lvl 1 UNit
 			
-			if (worth + managableGold >= cost && me.CanCreateUnit(attackerLevel, 1)) {
+			bool canUseLevel[3] = { ( worth > 3 ), (worth > cost ), ( worth > cost * 2) };
+
+			if ( canUseLevel[attackerLevel - 1] && me.CanCreateUnit(attackerLevel, 1)) {
 				solved.emplace_back(bridge);
 				me.CreateUnit(attackerLevel, 1);
 				m_answer.emplace_back(commands::Train(attackerLevel, bridge));
@@ -1511,120 +1534,169 @@ private:
 				m_search.ChangeTilesAfterTheBridge(m_eHQ, bridge, Tile::eActive, Tile::eInactive);
 			}
 		}
+//STEP 2: 
+		// ALSO ONLINE:
+		int hasTerritory{ true };
+		int expandTeamLevel{ 1 };
+		bool isMarked[Map::SIZE][Map::SIZE];
+		while (hasTerritory) {
+			if (!me.CanCreateUnit(expandTeamLevel, 1)) break;
 
-		// Score-Position-COST
-		vector<tuple<int, Vec2, int>> result;
-		result.reserve(tiles.size());
+			tiles = m_search.GetBoarderTiles(Tile::mActive);
+			hasTerritory = false;
+			// MARK FOR LEVEL 1
+			// mark next possible steps of my units for spreading:
+			for (int i = 0; i < Map::SIZE; i++) {
+				for (int j = 0; j < Map::SIZE; j++) {
+					isMarked[i][j] = false;
+				}
+			}
+			for (const auto& unit : uManager.m_units) {
+				if (unit.IsMy()) {
+					for (auto sh : shift) {
+						Vec2 neighbor{ unit.m_pos + sh };
+						if (IsValid(neighbor) && map.Get(neighbor) == Tile::neutral) {
+							isMarked[neighbor.y][neighbor.x] = true;
+							break; // mark and go mark for the next unit
+						}
+					}
+				}
+			}
+			// TRAIN LEVEL 1 UNITS
+			// to expand territory
+			for (auto[tile, score] : tiles) {
+				if (!isMarked[tile.y][tile.x] &&
+					!this->IsProtected(tile) &&
+					( map.Get(tile) == Tile::neutral || map.Get(tile) == Tile::eInactive)
+				) {
+					cerr << "\t create unit 1 at " << tile << endl;
+					me.CreateUnit(expandTeamLevel, 1);
+					m_answer.emplace_back(commands::Train(expandTeamLevel, tile));
+					// UPDATE UNITS
+					uManager.AddUnit(0, -1, expandTeamLevel, tile); // -1 is undef id
+					map.m_map[tile.y][tile.x] = Tile::mActive;
+					hasTerritory = true;
+					break;
+				}
+			}
+		}
+// STEP 3:
+		hasTerritory = true;
+		const int negative = -10'000'000;
+		while (hasTerritory) {
+			hasTerritory = false;
+			tiles = m_search.GetBoarderTiles(Tile::mActive);
+			tuple<int, Vec2, int> bestResult { negative, Vec2{0,0}, 0 };
+			// precalculation of all tiles:
+			for (auto& [tile, score] : tiles)
+			{ // check whether we already have solved this one (if it was bridge
+				score = 0;
+				if (!solved.empty()) {
+					auto solvedIt = find_if(solved.begin(), solved.end(), [&tile](auto&pos) { return pos == tile; });
+					if (solvedIt != solved.end()) {
+					// to not chose this tile for the training command
+						continue;
+					}
+				}
+				if (m_eHQ == tile) {
+					bestResult = { sd::mxScore, tile, sd::costByLevel[0] };
+					break;
+				}
 
-		const int negInfScore = -1'000'000'000;
-		// solve offline tiles with precalculation of all tiles:
-		for (auto& [tile,score] : tiles)
-		{ // check whether we already have solved this one (if it was bridge)
-			if (!solved.empty()) {
-				auto solvedIt = find_if(solved.begin(), solved.end(), [&tile](auto&pos) { return pos == tile; });
-				if (solvedIt != solved.end()) {
-					score = negInfScore; // to not chose this tile for the training command
-					result.emplace_back(score, tile, 1'000'000'000); // cost doesn't matter!
+				auto optEnemy{ uManager.GetUnitAt(tile) };
+				auto optBuilding{ bManager.GetBuildingAt(tile) };
+				bool isProtected{ this->IsProtected(tile) };
+				int enemyLevel{ optEnemy.has_value() ? optEnemy->m_level : 0 };
+				int attackerLevel{ isProtected ? 3 : min(enemyLevel + 1, 3) };
+
+				// ignore level 3 unit as attacker:
+				// to have opportunity to attack
+				bool isEnough{ (me.m_gold > 45 && me.m_income > 30) || me.m_gold >= 90 };
+				if (attackerLevel == 3 && !isEnough) continue; // don't choose level 3
+				if (!me.CanCreateUnit(attackerLevel, 1)) continue;
+				//check if it's bridge
+				auto bridgeIt = find_if(bridges.begin(), bridges.end(), [&tile](auto & b) {
+					return b.second == tile;
+				});
+				if (bridgeIt != bridges.end()) {
+					if (bridgeIt->first - sd::costByLevel[attackerLevel - 1] >
+						get<0>(bestResult) - get<2>(bestResult) // score - cost
+					) {
+						bestResult = { bridgeIt->first, tile, sd::costByLevel[attackerLevel - 1] };
+					}
 					continue;
 				}
-			}
-			if (m_eHQ == tile) {
-				score = sd::mxScore;
-				result.emplace_back(score, tile, sd::costByLevel[0]);
-				continue;
-			}
-
-			auto optEnemy{ uManager.GetUnitAt(tile) };
-			auto optBuilding{ bManager.GetBuildingAt(tile) };
-			bool isProtected{ this->IsProtected(tile) };
-			int enemyLevel{ optEnemy.has_value() ? optEnemy->m_level: 0 };
-			int attackerLevel{ isProtected ? 3 : min(enemyLevel + 1, 3) };
-			//check if it's bridge
-			auto bridgeIt = find_if(bridges.begin(), bridges.end(), [&tile](auto & b) {
-				return b.second == tile ; 
-			});
-			if (bridgeIt != bridges.end()) {
-				score = bridgeIt->first;
-				result.emplace_back(score, tile, sd::costByLevel[attackerLevel-1]);
-				continue;
-			}
-			// score all other cases:
-			score = sd::defaultScore;
-
-			if (map.Get(tile) == Tile::eActive) {
-				score = sd::activeTileScore;
-			}
-			else if (map.Get(tile) == Tile::eInactive) {
-				score = sd::inactiveTileScore;
-			}
-
-			if (map.Get(tile) != Tile::neutral) {
-				if (optBuilding.has_value()) {
-					score += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+				// score all other cases:
+				score = sd::defaultScore;
+				if (map.Get(tile) == Tile::eActive) {
+					score = sd::activeTileScore;
 				}
-				else if (enemyLevel) {
-					score += sd::costByLevel[enemyLevel - 1];
+				else if (map.Get(tile) == Tile::eInactive) {
+					score = sd::inactiveTileScore;
 				}
-			}
-			// look for inactive component around our tile
-			// how much we will get if activate?
-			for (auto&sh : shift) {
-				auto neighbor{ sh + tile };
-				if (!IsValid(neighbor) || map.Get(neighbor) != Tile::mInactive) continue;
-				auto pred = [&map](Vec2 p){
-					return (map.Get(p) == Tile::mInactive);
-				};
-				auto calc = [&bManager](Vec2 p) {
-					auto optBuilding{ bManager.GetBuildingAt(p) };
-					int result { 0 }; 
+
+				if (map.Get(tile) != Tile::neutral) {
 					if (optBuilding.has_value()) {
-						result += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+						score += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
 					}
-					return result;
-				};
-				m_search.Clear();
-				m_search.Dfs<decltype(pred),decltype(calc)>(neighbor, score, pred, calc);
+					else if (enemyLevel) {
+						score += sd::costByLevel[enemyLevel - 1];
+					}
+				}
+				// look for inactive component around our tile
+				// how much we will get if activate?
+				for (auto&sh : shift) {
+					auto neighbor{ sh + tile };
+					if (!IsValid(neighbor) || map.Get(neighbor) != Tile::mInactive) continue;
+					auto pred = [&map](Vec2 p) {
+						return (map.Get(p) == Tile::mInactive);
+					};
+					auto calc = [&bManager](Vec2 p) {
+						auto optBuilding{ bManager.GetBuildingAt(p) };
+						int res{ 0 };
+						if (optBuilding.has_value()) {
+							res += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+						}
+						return res;
+					};
+					m_search.Clear();
+					m_search.Dfs<decltype(pred), decltype(calc)>(neighbor, score, pred, calc);
+				}
+
+				if (score - sd::costByLevel[attackerLevel - 1] >
+					get<0>(bestResult) - get<2>(bestResult)
+				) {
+					bestResult = { score, tile, sd::costByLevel[attackerLevel - 1] };
+				}
 			}
 
-			result.emplace_back(score, tile, sd::costByLevel[attackerLevel - 1]);
-		}
-		// sort by (score-cost)
-
-		auto Score		= [](auto&value) { return get<0>(value); };
-		auto Position	= [](auto&value) { return get<1>(value); };
-		auto Cost		= [](auto&value) { return get<2>(value); };
-
-		Vec2 eHQ{ m_eHQ };
-		sort(result.begin(), result.end(), [&Score,&Position,&Cost,&eHQ](auto& lsh, auto& rsh) {
-			/*if (Score(lsh) - Cost(lsh) == Score(rsh) - Cost(rsh)) { 
-				return ( Position(lsh).Distanse(eHQ) < Position(rsh).Distanse(eHQ) );
-			}*/
-			return (Score(lsh) - Cost(lsh) > Score(rsh) - Cost(rsh));
-		});
-
-		// this->Build();
-		// Start Attack!
-		cerr << "Attackers precalc data: ";
-		for (const auto &[score, position, cost] : result) {
-			cerr << "[" << score << " " << position << " " << cost << "]; ";
+			// Start Attack!
+			cerr << "Best target for attack:(score|pos|cost): ";
+			cerr << "[" << get<0>(bestResult) << " " << get<1>(bestResult) << " " << get<2>(bestResult) << "];" << endl;
 			int level{ 1 };
 			for (int i = 1; i <= 3; i++) {
-				int x{ sd::costByLevel[i-1] };
-				if (cost == x) {
+				int x{ sd::costByLevel[i - 1] };
+				if (get<2>(bestResult) == x) {
 					level = i;
 					break;
 				}
 			}
-			// to have opportunity to attack
-			bool isEnough{ (me.m_gold > 45 || me.m_income > 30) || me.m_gold >= 90 };
-			if (level == 3 && !isEnough) continue;
-			//TODO: calculate income later
-			if (me.CanCreateUnit(level, 1)) { 
+		
+			if (me.CanCreateUnit(level, 1) && get<0>(bestResult) > get<2>(bestResult)) 
+			{
+				if (level > 1) {
+					uManager.MarkUnitForRemove(get<1>(bestResult));
+					uManager.RemoveMarkedUnits();
+				}
+				cerr << "Creating attacker at " << get<1>(bestResult) << endl;
 				me.CreateUnit(level, 1);
-				m_answer.emplace_back(commands::Train(level, position));
+				m_answer.emplace_back(commands::Train(level, get<1>(bestResult)));
+				// UPDATE UNITS
+				uManager.AddUnit(0, -1, level, get<1>(bestResult)); // -1 is undef id
+				map.m_map[get<1>(bestResult).y][get<1>(bestResult).x] = Tile::mActive;
+				hasTerritory = true;
 			}
 		}
-		cerr << endl;
 	}
 
 private:
@@ -1653,7 +1725,7 @@ struct Game {
 
 			m_commander.Move();
 			m_commander.Train();
-		//	m_commander.Build();
+			m_commander.Build();
 			m_commander.Print();
 		}
 	}
