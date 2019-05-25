@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <deque>
+#include <limits>
 #include <array>
 #include <tuple>
 #include <set>
@@ -34,6 +36,9 @@ struct Vec2 {
 	}
 	constexpr bool operator == (const Vec2& rsh) const noexcept {
 		return x == rsh.x && y == rsh.y;
+	}
+	constexpr bool operator != (const Vec2& rsh) const noexcept {
+		return !(*this == rsh);
 	}
 	friend constexpr Vec2 operator + (const Vec2& lsh, const Vec2& rsh) noexcept {
 		return { lsh.x + rsh.x, lsh.y + rsh.y };
@@ -244,6 +249,31 @@ struct BuildingManager {
 			return b.m_pos == pos;
 		});
 		return (it == m_buildings.end() ? nullopt : make_optional(*it));
+	}
+
+	bool IsProtected(Vec2 p, const Map& map) const noexcept {
+		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+
+		Tile ty{ map.Get(p) };
+
+		if (find_if(m_buildings.begin(), m_buildings.end(), [&p, &shift, &map, &ty](auto& b) {
+			if (b.IsTower() && ty == map.Get(b.m_pos)) {
+				if (b.m_pos == p) return true;
+
+				for (auto& sh : shift) {
+					auto towerNeighbor{ sh + b.m_pos };
+					if (towerNeighbor == p)
+					{ // tower and neighbor has the same owner
+						return true;
+					}
+				}
+			}
+			return false;
+		}) != m_buildings.end())
+		{
+			return true;
+		}
+		return false;
 	}
 
 	vector<Building> GetMines(bool isMy) const noexcept {
@@ -476,7 +506,6 @@ private:
 	Vec2 m_mHQ, m_eHQ;
 };
 
-
 /* find components connected by bridge in the graph */
 class CCSearch {
 public:
@@ -591,9 +620,115 @@ public:
 			}
 		}
 	}
+
+	// Dijkstra: has error when we're removing towers! 
+	// protected tiles still calculated!
+	// ****
+	// Look for cheapest path to enemy HQ and it's cost
+	void FindPath(Vec2 start, Vec2 finish) {
+		this->ClearDijkstra();
+		Tile type{ m_map->Get(start) }; // type of tiles we're searching
+		 // calculate cost to conquire this tile
+		auto Cost = [this](Vec2 pos) {
+			int cost{ 0 };
+			bool isProtected{ m_bManager->IsProtected(pos,*m_map) };
+			auto unit{ m_uManager->GetUnitAt(pos) };
+
+			if (isProtected) {
+				cost = sd::costByLevel[2];
+			} 
+			else if (unit.has_value()) {
+				cost = sd::costByLevel[min(unit->m_level + 1, 3) - 1];
+			}
+			else {
+				cost = sd::costByLevel[0];
+			}
+			return cost;
+		};
+
+		DijkstraPriority Q;
+		Q.emplace(start, start, 0);
+		while (!Q.empty()) {
+			auto top = Q.top();
+			Q.pop();
+
+			if (m_visited[top.position.y][top.position.x]) continue;
+
+			if (top.position == finish) break;
+
+			m_visited[top.position.y][top.position.x] = true;
+			m_parent[top.position.y][top.position.x] = top.parent;
+
+			for (auto shift : m_shift) {
+				Vec2 to{ shift + top.position };
+				if (IsValid(to) && type == m_map->Get(to)) {
+					int cost = Cost(to);
+					Q.emplace(to, top.position, cost);
+				}
+			}
+
+		}
+	}
+
+	deque<pair<Vec2, int>> GetPath(Vec2 start, Vec2 finish) const noexcept {
+		/*
+			Point<size_t> step = finish;
+			while (step != start) {
+				m_path.push_front(step);
+				step = m_parents[step.y][step.x];
+			}
+			m_path.push_front(start);
+		*/
+		deque<pair<Vec2, int>> path;
+		Vec2 step = finish;
+		while (step != start) {
+			Vec2 parent{ m_parent[step.y][step.x] };
+			int cost{ m_cost[step.y][step.x] - m_cost[parent.y][parent.x] };
+			path.emplace_front( step, cost / 10 );
+			step = m_parent[step.y][step.x];
+		}
+		return path;
+	}
+
+	int GetCost(Vec2 finish) const noexcept {
+		return m_cost[finish.y][finish.x];
+	}
+
 private:
+	struct Data {
+		Vec2	position;	//tile position
+		Vec2 	parent;		//tile from which we had came
+		int		cost;	
+
+		Data() = default;
+		Data(Vec2 pos, Vec2 par, int c) :
+			position(pos), parent(par), cost(c) {}
+
+		friend bool operator <(const Data& t1, const Data&t2) {
+			return t1.cost < t2.cost;
+		}
+		friend bool operator >(const Data& t1, const Data&t2) {
+			return t1.cost > t2.cost;
+		}
+	};
+
+	using DijkstraPriority = priority_queue<Data, vector<Data>, greater<Data>>;
+
+	void ClearDijkstra() {
+		for (int i = 0; i < Map::SIZE; i++) {
+			for (int j = 0; j < Map::SIZE; j++) {
+				m_visited[i][j] = false;
+				m_parent[i][j] = Vec2{-1,-1};
+				m_cost[i][j] = numeric_limits<int>::max();
+			}
+		}
+	}
+
 	array<Vec2, 4> m_shift;
 	bool m_visited[Map::SIZE][Map::SIZE];
+	Vec2 m_parent[Map::SIZE][Map::SIZE];
+	int  m_cost[Map::SIZE][Map::SIZE];
+
 	Map* m_map;
 	UnitManager* m_uManager;
 	BuildingManager* m_bManager;
