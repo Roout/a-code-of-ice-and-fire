@@ -603,22 +603,14 @@ class Commander {
 public:	
 	Commander(Data *data) :
 		m_data(data),
-		m_search(&data->m_map,&data->m_uManager, &data->m_bManager)
+		m_search(&data->m_map,&data->m_uManager, &data->m_bManager),
+		m_bridges(&data->m_map)
 	{
 	}
 
-	void Update() noexcept {
-		m_mHQ = Vec2{ 0,0 }, m_eHQ = Vec2{ 11,11 };
-		if (m_data->m_map.Get(Vec2{ 0,0 }) == Tile::eActive)
-			swap(m_mHQ, m_eHQ);
-
-		Bridges bridge(&m_data->m_map);
-
-		assert(m_eBridges.empty());
-		assert(m_mBridges.empty());
-
-		m_eBridges = bridge.GetBridges(Tile::eActive);
-		m_mBridges = bridge.GetBridges(Tile::mActive);
+	void UpdateBridges() {
+		m_eBridges = m_bridges.GetBridges(Tile::eActive);
+		m_mBridges = m_bridges.GetBridges(Tile::mActive);
 
 		cerr << "Enemy Bridges:" << endl;
 		for (auto&[from, to] : m_eBridges) {
@@ -631,6 +623,17 @@ public:
 			cerr << to << " ";
 		}
 		cerr << endl;
+	}
+
+	void Update() {
+		m_mHQ = Vec2{ 0,0 }, m_eHQ = Vec2{ 11,11 };
+		if (m_data->m_map.Get(Vec2{ 0,0 }) == Tile::eActive)
+			swap(m_mHQ, m_eHQ);
+
+		assert(m_eBridges.empty());
+		assert(m_mBridges.empty());
+
+		this->UpdateBridges();
 	}
 
 	void Clear() noexcept {
@@ -1478,8 +1481,8 @@ private:
 				}
 			}
 			// to have opportunity to attack
-			bool isEnough{ (me.m_gold < 45 || me.m_income < 30) || me.m_gold >= 90 };
-			if (level == 3 && isEnough) continue;
+			bool isEnough{ (me.m_gold > 45 || me.m_income > 30) || me.m_gold >= 90 };
+			if (level == 3 && !isEnough) continue;
 			//TODO: calculate income later
 			if (me.CanCreateUnit(level, 1)) { 
 				me.CreateUnit(level, 1);
@@ -1499,6 +1502,7 @@ private:
 	vector<string> m_answer;
 
 	CCSearch m_search;
+	Bridges m_bridges;
 };
 
 struct Game {
