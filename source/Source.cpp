@@ -795,13 +795,13 @@ public:
 
 		cerr << "Enemy Bridges:" << endl;
 		for (auto&[from, to] : m_eBridges) {
-			cerr << to << " ";
+			cerr <<from << " - " << to << " ";
 		}
 		cerr << endl;
 
 		cerr << "My Bridges:" << endl;
 		for (auto&[from, to] : m_mBridges) {
-			cerr << to << " ";
+			cerr << from << " - " << to << " ";
 		}
 		cerr << endl;
 	}
@@ -902,7 +902,7 @@ public:
 	bool IsBridge(Vec2 p, Tile type) const noexcept {
 		auto& bridges{ ( type == Tile::eActive ? m_eBridges : m_mBridges) };
 		return (find_if(bridges.begin(), bridges.end(), [&p](auto edge) {
-				return p == edge.second;
+				return p == edge.second || p == edge.first;
 		}) != bridges.end());
 	
 	}
@@ -1339,10 +1339,25 @@ private:
 		auto& map{ m_data->m_map };
 
 		vector<pair<int, Vec2>> values(m_mBridges.size());
-		for (const auto&[from, bridge] : m_mBridges) {
-			// calculate bridge value:
-			m_search.Clear();
-			values.emplace_back( m_search.GetScoreAfterBridge(m_mHQ, bridge, Tile::mActive), bridge);
+		
+		bool added[Map::SIZE][Map::SIZE];
+		for (int i = 0; i < Map::SIZE; i++)
+			for (int j = 0; j < Map::SIZE; j++)
+				added[i][j] = false;
+
+		for (const auto&[from, to] : m_mBridges) {
+			if (!added[from.y][from.x]) {
+				// calculate bridge value:
+				m_search.Clear();
+				values.emplace_back(m_search.GetScoreAfterBridge(m_mHQ, from, Tile::mActive), from);
+				added[from.y][from.x] = true;
+			}
+			if (!added[to.y][to.x]) {
+				// calculate bridge value:
+				m_search.Clear();
+				values.emplace_back(m_search.GetScoreAfterBridge(m_mHQ, to, Tile::mActive), to);
+				added[to.y][to.x] = true;
+			}
 		}
 		sort(values.rbegin(), values.rend());
 
@@ -1464,15 +1479,26 @@ private:
 		//	tiles.end()
 		//);
 
+		bool added[Map::SIZE][Map::SIZE];
+		for (int i = 0; i < Map::SIZE; i++)
+			for (int j = 0; j < Map::SIZE; j++)
+				added[i][j] = false;
 		// sort enemy bridges by score, keep position
 		vector<pair<int, Vec2>> bridges;
 		bridges.reserve(m_eBridges.size());
-		for (auto&[from, bridge] : m_eBridges) {
-			m_search.Clear();
-			bridges.emplace_back(
-				m_search.GetScoreAfterBridge(m_eHQ, bridge, Tile::eActive),
-				bridge
-			);
+		for (auto&[from, to] : m_eBridges) {
+			if (!added[from.y][from.x]) {
+				// calculate bridge value:
+				m_search.Clear();
+				bridges.emplace_back(m_search.GetScoreAfterBridge(m_eHQ, from, Tile::eActive), from);
+				added[from.y][from.x] = true;
+			}
+			if (!added[to.y][to.x]) {
+				// calculate bridge value:
+				m_search.Clear();
+				bridges.emplace_back(m_search.GetScoreAfterBridge(m_eHQ, to, Tile::eActive), to);
+				added[to.y][to.x] = true;
+			}
 		}
 		sort(bridges.rbegin(), bridges.rend());
 
