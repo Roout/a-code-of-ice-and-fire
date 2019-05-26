@@ -1536,7 +1536,7 @@ public:
 
 		auto mineSpots{ this->GetMyMineSpots() };
 		
-		if (me.m_gold < 50 || myMines.size() >= 3) return;
+		if (me.m_gold < 100 || myMines.size() >= 2) return;
 
 		sort(mineSpots.begin(), mineSpots.end(), [this](const Mine& lsh,const Mine& rsh) {
 			return lsh.m_pos.Distanse(m_mHQ) < rsh.m_pos.Distanse(m_mHQ);
