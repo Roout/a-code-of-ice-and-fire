@@ -984,6 +984,12 @@ public:
 		}
 		return false;
 	}
+	bool IsMineSpot(Vec2 p) const noexcept {
+		const auto& spots{ m_data->m_bManager.m_mines };
+		return (find_if(spots.cbegin(), spots.cend(), [&p](auto& spot) {
+			return spot.m_pos == p;
+		}) != spots.cend());
+	}
 	bool IsMine(Vec2 p) const noexcept {
 		const auto& buildings{ m_data->m_bManager.m_buildings };
 		return (find_if(buildings.cbegin(), buildings.cend(), [&p](auto& b) {
@@ -1365,10 +1371,103 @@ public:
 		}
 	}
 
+	void ReinforceBoarderline() {
+		auto& uManager{ m_data->m_uManager };
+		auto& bManager{ m_data->m_bManager };
+		auto& me{ m_data->m_me };
+		auto& map{ m_data->m_map };
+
+		// define tiles which need to reinforce:
+		auto weakTiles = m_search.GetOutline(Tile::mActive);
+		auto Filter = [&](auto & p) {
+			auto pos{ p.first };
+			// kick protected
+			if (this->IsProtected(pos)) return true;
+			// kick tiles without Tile::eActive around
+			if (!this->HasActiveEnemyNeighbor(pos)) return true;
+			// kick with unit 2,3
+			auto optUnit{ uManager.GetUnitAt(pos) };
+			if (optUnit.has_value() && optUnit->m_level > 1) return true;
+			// kick tiles with enemy Unit 3 as neighbor
+			//if (this->MinMaxLevelAround(pos, Tile::eActive).second == 3) return true;
+			return ( this->MinMaxLevelAround(pos, Tile::eActive).second == 3);
+		};
+		weakTiles.erase( remove_if(weakTiles.begin(), weakTiles.end(), Filter),  weakTiles.end());
+
+		bool isWeak[Map::SIZE][Map::SIZE];
+		for (int i = 0; i < Map::SIZE; i++)
+			for (int j = 0; j < Map::SIZE; j++)
+				isWeak[i][j] = false;
+
+		auto IsSpotForTower = [&](Vec2 pos) 
+		{ // is our active tile + not mine spot + wasn't added + without unit
+			if (map.Get(pos) != Tile::mActive || this->IsMineSpot(pos)) return false;
+			if (isWeak[pos.y][pos.x]) return false; // already added or will be added from @weakTiles
+			return ( !uManager.GetUnitAt(pos).has_value() );
+		};
+
+		for (const auto&[tile, score] : weakTiles) {
+			isWeak[tile.y][tile.x] = true;
+		}
+
+		vector<Vec2> possibleTowerPositions;
+		for (const auto&[tile, score] : weakTiles) {
+			auto optUnit{ uManager.GetUnitAt(tile) };
+			if (!optUnit.has_value()) {
+				possibleTowerPositions.emplace_back(tile);
+			}
+			// add all[empty mActive] positions around:
+			auto neighbors = this->AllNeighbors(tile, IsSpotForTower);
+			for (auto neighbor : neighbors) {
+				possibleTowerPositions.emplace_back(neighbor);
+			}
+		}
+		
+		auto IsWeakTile = [&isWeak](Vec2 tile) {
+			return isWeak[tile.y][tile.x];
+		};
+
+		array<Vec2, 5> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {0, 0} };
+
+		while (me.CanCreateBuilding(sd::towerCost) && !possibleTowerPositions.empty())
+		{
+			int	mxWeaklings = 0;
+			Vec2 bestTile {0,0};
+
+			for (Vec2 posForTower : possibleTowerPositions) {
+				int weakCount{ (int)this->AllNeighbors(posForTower, IsWeakTile).size() };
+				if (isWeak[posForTower.y][posForTower.x]) weakCount++;
+
+				if (this->MinMaxLevelAround(posForTower, Tile::eActive).second == 3) continue;
+
+				if (weakCount > mxWeaklings) {
+					mxWeaklings = weakCount;
+					bestTile = posForTower;
+				}
+			}
+
+			if (!mxWeaklings) break;
+			// mark all neighbors as protected
+			for (auto sh : shift) {
+				Vec2 neighbor{ sh + bestTile };
+				if (IsValid(neighbor)) {
+					isWeak[neighbor.y][neighbor.x] = false;
+				}
+			}
+			
+			me.CreateBuilding(sd::towerCost, 0);
+			m_answer.emplace_back(commands::Build(BType::Tower, bestTile));
+			// UPDATE BUILDINGS
+			bManager.AddBuilding(0, BType::Tower, bestTile);
+			::cerr << "Defend weak by tower at: " << bestTile << endl;
+		}
+	}
+
 	void Train() {
 		this->TryChainAttack();
 		this->DefendFromChainAttack();
 		this->DefendBridges();
+		this->ReinforceBoarderline();
 		this->AttackEnemy();
 	}
 
