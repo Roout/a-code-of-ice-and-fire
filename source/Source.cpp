@@ -543,14 +543,14 @@ public:
 			bool is{ from == map->Get(v) };
 			if (is) {
 				map->m_map[v.y][v.x] = to;
-				// remove units from manager!
-				uManager->MarkUnitForRemove(v);
-				cerr << "Marked: " << v << endl;
+				//// remove units from manager!
+				//uManager->MarkUnitForRemove(v);
+				//cerr << "Marked: " << v << endl;
 			}
 			return is;
 		};
 		this->Dfs<decltype(modify), decltype(calc)>(bridge, score, modify, calc);
-		uManager->RemoveMarkedUnits();
+	//	uManager->RemoveMarkedUnits();
 	}
 	/* used to calculate CC */
 	template <class Pred, class Calc>
@@ -839,7 +839,7 @@ public:
 		m_eBridges = m_bridges.GetBridges(Tile::eActive);
 		m_mBridges = m_bridges.GetBridges(Tile::mActive);
 
-		cerr << "Enemy Bridges:" << endl;
+	/*	cerr << "Enemy Bridges:" << endl;
 		for (auto&[from, to] : m_eBridges) {
 			cerr <<from << " - " << to << " ";
 		}
@@ -849,7 +849,7 @@ public:
 		for (auto&[from, to] : m_mBridges) {
 			cerr << from << " - " << to << " ";
 		}
-		cerr << endl;
+		cerr << endl;*/
 	}
 
 	void Update() {
@@ -1112,7 +1112,7 @@ public:
 			}
 		}; break;
 		case Tile::mInactive: {
-			cerr << "Error! Trying to create on my inactive tile : " << dest<< endl;
+			cerr << "Error! Trying to create on my inactive tile : " << dest << endl;
 		}; break;
 		case Tile::eActive: {
 			bool isBridge{ this->IsBridge(dest, Tile::eActive) };
@@ -1284,7 +1284,7 @@ public:
 					if (!IsValid(neighbor)) continue;
 					auto occupant { uManager.GetUnitAt(neighbor) };
 					auto building{ bManager.GetBuildingAt(neighbor) };
-					bool isOccupiedByEnemy{ occupant.has_value() && !occupant->IsMy() };
+					bool isOccupiedByEnemy{ occupant.has_value() && !occupant->IsMy()};
 					auto isOccupiedByMyBuilding{ building.has_value() && building->IsMy() };
 
 					if ( map.Get(neighbor) != Tile::blocked && //not blocked
@@ -1364,6 +1364,7 @@ public:
 			}
 		}
 	}
+
 	void Train() {
 		this->TryChainAttack();
 		this->DefendFromChainAttack();
@@ -1441,7 +1442,7 @@ private:
 		}
 		sort(values.rbegin(), values.rend());
 
-		cerr << "Bridge's worth: [ ";
+		cerr << "My bridge's worth: [ ";
 		for (const auto&[worth, bridge] : values) {
 			cerr << "[" << bridge << ": " << worth << "]; ";
 		}
@@ -1500,11 +1501,12 @@ private:
 			minLevelTreat = ( isProtected ? 3 : min(levelOnBridge + 1, 3) );
 			//can be oprimized using lambda as modifier for @trainLevels vector below
 			auto treats{ this->AllNeighbors(bridge, [&map, &uManager,&minLevelTreat](Vec2 pos) {
-				auto optUnit = uManager.GetUnitAt(pos);
-				bool hasTreatningEnemy = (optUnit.has_value()
-					&& optUnit->m_level >= minLevelTreat
-					&& !optUnit->IsMy()); // 1 is id of enemy
-				return  (hasTreatningEnemy || map.Get(pos) == Tile::eActive);
+					if (map.Get(pos) == Tile::eInactive) return false;
+					auto optUnit = uManager.GetUnitAt(pos);
+					bool hasTreatningEnemy = (optUnit.has_value()
+						&& optUnit->m_level >= minLevelTreat
+						&& !optUnit->IsMy()); // 1 is id of enemy
+					return  (hasTreatningEnemy || map.Get(pos) == Tile::eActive);
 				})
 			};
 			int trainingCost{ 0 };
@@ -1551,14 +1553,6 @@ private:
 		//get tiles on the boarder
 		auto tiles{ m_search.GetBoarderTiles(Tile::mActive) };
 
-		//// remove positions if there is already unit to move there.
-		//tiles.erase(
-		//	remove_if(tiles.begin(), tiles.end(), [this](auto& p) {
-		//		return (m_takenPositions.find(p.first) != m_takenPositions.end());
-		//	}),
-		//	tiles.end()
-		//);
-
 		bool added[Map::SIZE][Map::SIZE];
 		for (int i = 0; i < Map::SIZE; i++)
 			for (int j = 0; j < Map::SIZE; j++)
@@ -1566,7 +1560,7 @@ private:
 		// sort enemy bridges by score, keep position
 		vector<pair<int, Vec2>> bridges;
 		bridges.reserve(m_eBridges.size());
-		for (auto&[from, to] : m_eBridges) {
+		for (auto [from, to] : m_eBridges) {
 			if (!added[from.y][from.x]) {
 				// calculate bridge value:
 				m_search.Clear();
@@ -1592,8 +1586,8 @@ private:
 		// bridges INTERSECT tilesOnBoarder
 		vector<pair<int , Vec2>> bridgesUnderAttack;
 		bridgesUnderAttack.reserve(10);
-		for (auto& [worth, bridge] : bridges) {
-			for (auto& [boarderTile, score] : tiles) {
+		for (auto [worth, bridge] : bridges) {
+			for (auto [boarderTile, score] : tiles) {
 				if (bridge == boarderTile) { // we can attack bridge
 					bridgesUnderAttack.emplace_back(worth, bridge);
 					break;
@@ -1658,6 +1652,7 @@ private:
 					isMarked[i][j] = false;
 				}
 			}
+	// TODO: add check if tile is empty and more types of tiles to choose for expansion
 			for (const auto& unit : uManager.m_units) {
 				if (unit.IsMy()) {
 					for (auto sh : shift) {
