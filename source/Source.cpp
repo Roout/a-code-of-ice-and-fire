@@ -1743,7 +1743,6 @@ private:
 			if (!me.CanCreateUnit(expandTeamLevel, 1)) break;
 
 			tiles = m_search.GetBoarderTiles(Tile::mActive);
-			hasTerritory = false;
 			// MARK FOR LEVEL 1
 			// mark next possible steps of my units for spreading:
 			for (int i = 0; i < Map::SIZE; i++) {
@@ -1751,7 +1750,7 @@ private:
 					isMarked[i][j] = false;
 				}
 			}
-	// TODO: add check if tile is empty and more types of tiles to choose for expansion
+			//mark neutral tiles for the next step of existing units to avoid stucking!
 			for (const auto& unit : uManager.m_units) {
 				if (unit.IsMy()) {
 					for (auto sh : shift) {
@@ -1763,24 +1762,98 @@ private:
 					}
 				}
 			}
-			// TRAIN LEVEL 1 UNITS
-			// to expand territory
-			for (auto[tile, score] : tiles) {
-				if (!isMarked[tile.y][tile.x] &&
-					!this->IsProtected(tile) &&
-					map.Get(tile) != Tile::blocked &&
-					!uManager.GetUnitAt(tile).has_value()
-				) {
-					cerr << "\t create unit 1 at " << tile << endl;
-					me.CreateUnit(expandTeamLevel, 1);
-					m_answer.emplace_back(commands::Train(expandTeamLevel, tile));
-					// UPDATE UNITS
-					uManager.AddUnit(0, -1, expandTeamLevel, tile); // -1 is undef id
-					map.m_map[tile.y][tile.x] = Tile::mActive;
-					hasTerritory = true;
-					break;
+			
+			auto TileFilter = [&](const auto& p) {
+				return (isMarked[p.first.y][p.first.x] ||
+						this->IsProtected(p.first) ||
+						map.Get(p.first) == Tile::blocked ||
+						uManager.GetUnitAt(p.first).has_value()
+				);
+			};
+			// filter:
+			tiles.erase(
+				remove_if(tiles.begin(), tiles.end(), TileFilter),
+				tiles.end()
+			);
+
+			if (tiles.empty()) break;
+			// score all bridges
+			int bridgeScores[Map::SIZE][Map::SIZE];
+			for (int i = 0; i < Map::SIZE; i++) {
+				for (int j = 0; j < Map::SIZE; j++) {
+					bridgeScores[i][j] = 0;
 				}
 			}
+			for (auto[from, to] : m_eBridges) {
+				if (!bridgeScores[from.y][from.x]) {
+					// calculate bridge value:
+					m_search.Clear();
+					bridgeScores[from.y][from.x] = m_search.GetScoreAfterBridge(m_eHQ, from, Tile::eActive);
+				}
+				if (!bridgeScores[to.y][to.x]) {
+					// calculate bridge value:
+					m_search.Clear();
+					bridgeScores[to.y][to.x] = m_search.GetScoreAfterBridge(m_eHQ, to, Tile::eActive);
+				}
+			}
+
+			// score expansion:
+			auto bestTile{ tiles.front().first };
+			auto maxScore{ tiles.front().second };
+			for (auto&[tile, score] : tiles) 
+			{
+				auto type = map.Get(tile);
+
+				if (bridgeScores[tile.y][tile.x]) {
+					score = bridgeScores[tile.y][tile.x];
+				}
+				else if (type == Tile::eActive)
+					score = sd::activeTileScore + (this->IsMine(tile) ? sd::minMineCost : 0);
+				else if (type == Tile::eInactive)
+					score = sd::inactiveTileScore;
+				else
+					score = sd::defaultScore;
+				// look for inactive component around our tile
+				// how much we will get if activate?
+				for (auto&sh : shift) {
+					auto neighbor{ sh + tile };
+					if (!IsValid(neighbor) || map.Get(neighbor) != Tile::mInactive) continue;
+					auto pred = [&map](Vec2 p) {
+						return (map.Get(p) == Tile::mInactive);
+					};
+					auto calc = [&bManager](Vec2 p) {
+						auto optBuilding{ bManager.GetBuildingAt(p) };
+						int res{ 0 };
+						if (optBuilding.has_value()) {
+							res += (optBuilding.value().IsTower() ? sd::towerCost : sd::minMineCost);
+						}
+						return res;
+					};
+					m_search.Clear();
+					m_search.Dfs<decltype(pred), decltype(calc)>(neighbor, score, pred, calc);
+				}
+
+				if (maxScore == score && bestTile.Distanse(m_eHQ) > tile.Distanse(m_eHQ)) 
+				{
+					maxScore = score;
+					bestTile = tile;
+				}
+				else if (maxScore < score) {
+					maxScore = score;
+					bestTile = tile;
+				}
+			}
+			
+			// TRAIN LEVEL 1 UNITS
+			// to expand territory
+		
+			::cerr << "\t create unit 1 at " << bestTile << endl;
+			me.CreateUnit(expandTeamLevel, 1);
+			m_answer.emplace_back(commands::Train(expandTeamLevel, bestTile));
+			// UPDATE UNITS
+			uManager.AddUnit(0, -1, expandTeamLevel, bestTile); // -1 is undef id
+			map.m_map[bestTile.y][bestTile.x] = Tile::mActive;
+			hasTerritory = true;
 		}
 // STEP 3:
 		hasTerritory = true;
