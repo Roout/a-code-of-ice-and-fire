@@ -1446,7 +1446,7 @@ public:
 				}
 			}
 
-			if (!mxWeaklings) break;
+			if (mxWeaklings < 2) break;
 			// mark all neighbors as protected
 			for (auto sh : shift) {
 				Vec2 neighbor{ sh + bestTile };
