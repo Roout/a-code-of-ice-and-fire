@@ -633,7 +633,7 @@ public:
 
 		Vec2 HQ{ type == Tile::mActive? mHQ : eHQ};
 	
-		m_visited[mHQ.y][mHQ.x] = true;
+		m_visited[HQ.y][HQ.x] = true;
 
 		vector<pair<Vec2, int>> boarderTiles;
 		boarderTiles.reserve(10); //to avoid allocations
@@ -666,14 +666,55 @@ public:
 		return boarderTiles;
 	}
 
+	vector<pair<Vec2, int>> GetOutline(Tile type) {
 
+		this->Clear();
+
+		auto	mHQ = Vec2{ 0,0 },
+				eHQ = Vec2{ 11,11 };
+		if (m_map->Get(Vec2{ 0,0 }) == Tile::eActive)
+			swap(mHQ, eHQ);
+
+		Vec2 HQ{ type == Tile::mActive ? mHQ : eHQ };
+
+		m_visited[HQ.y][HQ.x] = true;
+
+		vector<pair<Vec2, int>> boarderTiles;
+		boarderTiles.reserve(10); //to avoid allocations
+
+		queue<Vec2> Q;
+		Q.push(HQ);
+
+		while (!Q.empty()) {
+			auto top{ Q.front() };
+			Q.pop();
+
+			for (auto& sh : m_shift) {
+				auto tile{ top + sh };
+				if (IsValid(tile) &&
+					!m_visited[tile.y][tile.x] &&
+					m_map->Get(tile) != Tile::blocked)
+				{
+					m_visited[tile.y][tile.x] = true;
+
+					if (m_map->Get(tile) == type) {
+						Q.push(tile);
+					}
+					else {
+						boarderTiles.emplace_back(top, 0);
+					}
+				}
+			}
+		}
+
+		return boarderTiles;
+	}
 	// Dijkstra: has error when we're removing towers! 
 	// protected tiles still calculated!
 	// ****
 	// Look for cheapest path to enemy HQ and it's cost
 	void FindPath(Vec2 start, Vec2 finish) {
 		this->ClearDijkstra();
-		Tile type{ m_map->Get(start) }; // type of tiles we're searching
 		 // calculate cost to conquire this tile
 		auto Cost = [this](Vec2 pos) {
 			int cost{ 0 };
@@ -694,22 +735,27 @@ public:
 
 		DijkstraPriority Q;
 		Q.emplace(start, start, 0);
+		m_cost[start.y][start.x] = 0;
 		while (!Q.empty()) {
 			auto top = Q.top();
 			Q.pop();
 
 			if (m_visited[top.position.y][top.position.x]) continue;
 
-			if (top.position == finish) break;
-
 			m_visited[top.position.y][top.position.x] = true;
 			m_parent[top.position.y][top.position.x] = top.parent;
 
+			if (top.position == finish) break;
+
 			for (auto shift : m_shift) {
 				Vec2 to{ shift + top.position };
-				if (IsValid(to) && type == m_map->Get(to)) {
+				Tile type{ m_map->Get(to) };
+				if (IsValid(to) && type != Tile::blocked && type != Tile::mActive ) {
 					int cost = Cost(to);
-					Q.emplace(to, top.position, cost);
+					if (m_cost[to.y][to.x] > m_cost[top.position.y][top.position.x] + cost) {
+						m_cost[to.y][to.x] = m_cost[top.position.y][top.position.x] + cost;
+						Q.emplace(to, top.position, cost);
+					}
 				}
 			}
 
@@ -959,7 +1005,6 @@ public:
 		}
 		return neighbors;
 	}
-
 	vector<Vec2> GetMyMineSpots() const noexcept {
 		vector<Vec2> spots;
 		auto& mines{ m_data->m_bManager.m_mines };
@@ -971,6 +1016,15 @@ public:
 		return spots;
 	}
 
+	bool CanChainFrom(Vec2 from, Vec2 to, Tile chainnerType) {
+		int cost{ m_search.GetCost(to) };
+		if( chainnerType == Tile::eActive ) {
+			return cost <= m_data->m_enemy.m_gold + m_data->m_enemy.m_income;
+		}
+		else {
+			return cost <= m_data->m_me.m_gold;
+		}
+	}
 	int ScoreMove(Vec2 dest, const Unit& unit) noexcept {
 		array<Vec2, 4> shift{ Vec2{-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 		auto& map{ m_data->m_map };
@@ -1276,7 +1330,7 @@ public:
 		}
 	}
 
-	void AttackChain() {
+	void DefendFromChainAttack() {
 		auto& uManager{ m_data->m_uManager };
 		auto& bManager{ m_data->m_bManager };
 		auto& me{ m_data->m_me };
@@ -1284,9 +1338,35 @@ public:
 
 	//	for()
 	}
-
+	void TryChainAttack() {
+		auto tiles{ m_search.GetOutline(Tile::mActive) };
+		cerr << "Outline: ";
+		for (auto tile : tiles) {
+			cerr << tile.first << " ";
+		}
+		cerr << endl;
+		for (auto tile : tiles) {
+			m_search.FindPath(tile.first, m_eHQ);
+			int cost{ m_search.GetCost(m_eHQ) };
+			bool canChain{ cost <= m_data->m_me.m_gold };
+			cerr << "\tCost from " << tile.first << " to " << m_eHQ << " is " << cost << " ? " << m_data->m_me.m_gold << endl;
+			if (canChain)
+			{
+				auto path{ m_search.GetPath(tile.first, m_eHQ) };
+				for (auto [step, level] : path) {
+					if (!m_data->m_me.CanCreateUnit(level,0)) {
+						cerr<<"ERROR! CAN'T CREATE UNIT!"<<endl;
+					}
+					m_data->m_me.CreateUnit(level, 0);
+					m_answer.emplace_back(commands::Train(level, step));
+				}
+				break;
+			}
+		}
+	}
 	void Train() {
-		this->AttackChain();
+		this->TryChainAttack();
+		this->DefendFromChainAttack();
 		this->DefendBridges();
 		this->AttackEnemy();
 	}
@@ -1381,36 +1461,68 @@ private:
 			auto optUnit{ uManager.GetUnitAt(bridge) };
 			int levelOnBridge{ (optUnit.has_value() ? optUnit.value().m_level : 0) };
 			bool isProtected { this->IsProtected(bridge) };
-			int minLevelTreat { isProtected ? 3 : min( levelOnBridge + 1, 3) };
-//can be oprimized using lambda as modifier for @trainLevels vector below
+			auto[minLevelTreat, maxLevelTreat] = this->MinMaxLevelAround(bridge, Tile::eActive);
+	
+			if (!isProtected
+				&& levelOnBridge < 2
+				&& maxLevelTreat != 3
+			) {// we can't nullify or it's not worth money!
+				auto optTowerPos{ this->GetPositionForTowerAround(bridge) };
+				const int minLevelDefender{ 2 };
+				if (optTowerPos.has_value() &&
+					me.CanCreateBuilding(sd::towerCost) &&
+					!bManager.IsMineSpot(*optTowerPos) && // not a mine spot
+					worth > sd::towerCost
+				) {
+					me.CreateBuilding(sd::towerCost, 0);
+					m_takenPositions.insert(optTowerPos.value());
+					m_answer.emplace_back(commands::Build(BType::Tower, optTowerPos.value()));
+					// UPDATE BUILDINGS
+					bManager.AddBuilding(0, BType::Tower, optTowerPos.value());
+					isProtected = true;
+					cerr << "Create bridge-defending building: " << optTowerPos.value() << endl;
+				}
+				else if (!levelOnBridge &&
+					!bManager.GetBuildingAt(bridge).has_value() &&
+					me.CanCreateUnit(minLevelDefender, 0) &&
+					worth > sd::costByLevel[minLevelDefender - 1] * 2
+				) { // can't create a tower and no unit/building on the bridge
+					me.CreateUnit(minLevelDefender, 0);
+					m_answer.emplace_back(commands::Train(minLevelDefender, bridge));
+					// UPDATE UNITS
+					levelOnBridge = minLevelDefender;
+					uManager.AddUnit(0, -1, minLevelDefender, bridge); // -1 is undef id
+					cerr << "Create bridge-defending unit: " << bridge << endl;
+				}
+			}
+
+			// level of attacker that can destroy my bridge
+			minLevelTreat = ( isProtected ? 3 : min(levelOnBridge + 1, 3) );
+			//can be oprimized using lambda as modifier for @trainLevels vector below
 			auto treats{ this->AllNeighbors(bridge, [&map, &uManager,&minLevelTreat](Vec2 pos) {
 				auto optUnit = uManager.GetUnitAt(pos);
 				bool hasTreatningEnemy = (optUnit.has_value()
 					&& optUnit->m_level >= minLevelTreat
 					&& !optUnit->IsMy()); // 1 is id of enemy
 				return  (hasTreatningEnemy || map.Get(pos) == Tile::eActive);
-				}) 
+				})
 			};
-
 			int trainingCost{ 0 };
-			int maxLevelTreat{ 0 };
 			vector<int> trainLevels;
 			trainLevels.reserve(treats.size());
 			for (Vec2 p : treats) {
 				auto enemyAround = uManager.GetUnitAt(p);
 				auto level{ enemyAround.has_value() ? enemyAround->m_level : 0 };
-				maxLevelTreat = max(level, maxLevelTreat);
 				int needLevelForKill{ this->IsProtected(p) ? 3 : min(level+1, 3) };
 				trainLevels.emplace_back(needLevelForKill);
 				trainingCost += sd::costByLevel[needLevelForKill-1];
 			}
-
-			const int managableGold{ 0 };
-			if (me.CanCreateUnits(trainLevels) 
-				&& (worth + managableGold >= trainingCost) 
-				&& !trainLevels.empty()
+			
+		if (me.CanCreateUnits(trainLevels) 
+			&& (worth > trainingCost * 2) 
+			&& !trainLevels.empty()
 			) { // we can nullify all treats by training!
-				cerr << "Train units around the bridge : ";
+				cerr << "Remove treat : ";
 				for (size_t i = 0; i < trainLevels.size(); i++) {
 					cerr << treats[i] << "; ";
 					if (trainLevels[i] > 1) {
@@ -1418,7 +1530,6 @@ private:
 						uManager.MarkUnitForRemove(treats[i]);//if there is any
 					}
 					me.CreateUnit(trainLevels[i], 1);
-				//	m_takenPositions.insert(treats[i]);
 					m_answer.emplace_back(commands::Train(trainLevels[i], treats[i]));
 					// UPDATE MAP & UNITS
 					map.m_map[treats[i].y][treats[i].x] = Tile::mActive;
@@ -1427,37 +1538,6 @@ private:
 				cerr << endl;
 				uManager.RemoveMarkedUnits();
 			}
-			else if(!isProtected 
-				&& levelOnBridge < 2 
-				&& maxLevelTreat != 3
-			) {// we can't nullify or it's not worth money!
-				auto optTowerPos{this->GetPositionForTowerAround(bridge) };
-				const int minLevelDefender{ 2 };
-				if (optTowerPos.has_value() && 
-					me.CanCreateBuilding(sd::towerCost) &&
-					!bManager.IsMineSpot(*optTowerPos) && // not a mine spot
-					worth + managableGold >= sd::towerCost
-				) {
-					me.CreateBuilding(sd::towerCost, 0);
-					m_takenPositions.insert(optTowerPos.value());
-					m_answer.emplace_back(commands::Build(BType::Tower, optTowerPos.value()));
-					// UPDATE BUILDINGS
-					bManager.AddBuilding(0, BType::Tower, optTowerPos.value());
-					cerr << "Create bridge-defending building: " << optTowerPos.value() << endl;
-				}
-				else if(!levelOnBridge && 
-					!bManager.GetBuildingAt(bridge).has_value() && 
-					me.CanCreateUnit(minLevelDefender, 0) &&
-					worth + managableGold >= sd::costByLevel[minLevelDefender-1]
-				) { // can't create a tower and no unit/building on the bridge
-					me.CreateUnit(minLevelDefender, 0);
-					m_answer.emplace_back(commands::Train(minLevelDefender, bridge));
-					// UPDATE UNITS
-					uManager.AddUnit(0, -1, minLevelDefender, bridge); // -1 is undef id
-					cerr << "Create bridge-defending unit: " << bridge << endl;
-				}
-			}
-			// else if protected and no need to add unit 2 or tower!
 		}
 	}
 	// CALL ONLY AFTER DEFEND!
@@ -1565,6 +1645,7 @@ private:
 		int hasTerritory{ true };
 		int expandTeamLevel{ 1 };
 		bool isMarked[Map::SIZE][Map::SIZE];
+
 		while (hasTerritory) {
 			if (!me.CanCreateUnit(expandTeamLevel, 1)) break;
 
@@ -1593,7 +1674,8 @@ private:
 			for (auto[tile, score] : tiles) {
 				if (!isMarked[tile.y][tile.x] &&
 					!this->IsProtected(tile) &&
-					( map.Get(tile) == Tile::neutral || map.Get(tile) == Tile::eInactive)
+					map.Get(tile) != Tile::blocked &&
+					!uManager.GetUnitAt(tile).has_value()
 				) {
 					cerr << "\t create unit 1 at " << tile << endl;
 					me.CreateUnit(expandTeamLevel, 1);
