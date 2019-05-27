@@ -717,25 +717,27 @@ public:
 	// protected tiles still calculated!
 	// ****
 	// Look for cheapest path to enemy HQ and it's cost
+	int Cost(Vec2 pos) {
+		int cost{ 0 };
+		bool isProtected{ m_bManager->IsProtected(pos,*m_map) };
+		auto unit{ m_uManager->GetUnitAt(pos) };
+		if (m_map->Get(pos) == Tile::mInactive) {
+			cost = 0;
+		}
+		else if (isProtected) {
+			cost = sd::costByLevel[2];
+		}
+		else if (unit.has_value()) {
+			cost = sd::costByLevel[min(unit->m_level + 1, 3) - 1];
+		}
+		else {
+			cost = sd::costByLevel[0];
+		}
+		return cost;
+	};
 	void FindPath(Vec2 start, Vec2 finish) {
 		this->ClearDijkstra();
 		 // calculate cost to conquire this tile
-		auto Cost = [this](Vec2 pos) {
-			int cost{ 0 };
-			bool isProtected{ m_bManager->IsProtected(pos,*m_map) };
-			auto unit{ m_uManager->GetUnitAt(pos) };
-
-			if (isProtected) {
-				cost = sd::costByLevel[2];
-			} 
-			else if (unit.has_value()) {
-				cost = sd::costByLevel[min(unit->m_level + 1, 3) - 1];
-			}
-			else {
-				cost = sd::costByLevel[0];
-			}
-			return cost;
-		};
 
 		DijkstraPriority Q;
 		Q.emplace(start, start, 0);
@@ -766,7 +768,7 @@ public:
 		}
 	}
 
-	deque<pair<Vec2, int>> GetPath(Vec2 start, Vec2 finish) const noexcept {
+	deque<pair<Vec2, int>> GetPath(Vec2 start, Vec2 finish) const {
 		/*
 			Point<size_t> step = finish;
 			while (step != start) {
@@ -790,7 +792,8 @@ public:
 		return m_cost[finish.y][finish.x];
 	}
 
-private:
+
+//private:
 	struct Data {
 		Vec2	position;	//tile position
 		Vec2 	parent;		//tile from which we had came
@@ -841,9 +844,11 @@ public:
 
 	void UpdateEnemyBridge() {
 		m_eBridges = m_bridges.GetBridges(Tile::eActive);
+		m_eBridges.shrink_to_fit();
 	}
 	void UpdateMyBridge() {
 		m_mBridges = m_bridges.GetBridges(Tile::mActive);
+		m_mBridges.shrink_to_fit();
 	}
 
 	void UpdateBridges() {
@@ -1358,14 +1363,78 @@ public:
 			if (canChain)
 			{
 				auto path{ m_search.GetPath(tile.first, m_eHQ) };
+				path.shrink_to_fit();
 				for (auto [step, level] : path) {
-					if (!m_data->m_me.CanCreateUnit(level,0)) {
-						cerr<<"ERROR! CAN'T CREATE UNIT!"<<endl;
-					}
+					if (level == 0) continue; //mInactive
 					m_data->m_me.CreateUnit(level, 0);
 					m_answer.emplace_back(commands::Train(level, step));
 				}
 				break;
+			}
+		}
+// maybe only tiles with enemy tile near?
+		auto& map{ m_data->m_map };
+		// try to attack enemy connections!
+		int gold { m_data->m_me.m_gold };
+		Tile saved[Map::SIZE][Map::SIZE];
+
+		deque<pair<Vec2, int>> bestPath;
+		int bestDiff = { 0 };
+
+		for (auto [tile,score] : tiles) {
+			m_search.FindPath(tile, Vec2{-1,-1});
+			for (int x = 0; x < Map::SIZE; x++) {
+				for (int y = 0; y < Map::SIZE; y++)
+				{
+					int cost{ m_search.GetCost(Vec2{x,y}) };
+					if (cost <= gold && cost > 0) 
+					{ // reachable
+						auto path = m_search.GetPath(tile, Vec2{ x,y });
+
+						// before:
+						int before{ 0 };
+						m_search.Clear(); // clear only visited array
+						m_search.Dfs(m_eHQ, before, Tile::eActive);
+						for (auto[pos, level] : path) {
+							saved[pos.y][pos.x] = map.m_map[pos.y][pos.x];
+							map.m_map[pos.y][pos.x] = Tile::mActive;
+						}
+						int after{ 0 };
+						m_search.Clear(); // clear only visited array
+						m_search.Dfs(m_eHQ, after, Tile::eActive);
+						// restore path
+						for (auto[pos, level] : path) {
+							map.m_map[pos.y][pos.x] = saved[pos.y][pos.x];
+						}
+
+						int diff{ before - after };
+						if (diff > bestDiff) {
+							bestDiff = diff;
+							bestPath.clear();
+							bestPath = move(path);
+						}
+					}
+
+				}
+			}
+		}
+
+		if (!bestPath.empty() && bestDiff - (int)bestPath.size() > 1) {
+			auto& uManager{ m_data->m_uManager };
+
+			cerr << "\tChaine from " << bestPath.front().first << " to " << bestPath.back().first << endl;
+			bestPath.shrink_to_fit();
+			for (auto&[step, level] : bestPath) {
+				if (level == 0) continue; //mInactive
+				uManager.MarkUnitForRemove(step);
+				uManager.RemoveMarkedUnits();
+				m_data->m_me.CreateUnit(level, 1);
+				m_answer.emplace_back(commands::Train(level, step));
+			
+				// UPDATE UNITS
+			
+				uManager.AddUnit(0, -1, level, step); // -1 is undef id
+				map.m_map[step.y][step.x] = Tile::mActive;
 			}
 		}
 	}
@@ -1489,7 +1558,7 @@ public:
 			cerr << pos << " ";
 		}
 		cerr << endl;
-
+		weakTiles.shrink_to_fit();
 		// train
 		while (me.CanCreateUnit(1, 0) && !weakTiles.empty()) {
 			Vec2 bestTile{ weakTiles.front().first};
@@ -1726,6 +1795,7 @@ private:
 				added[to.y][to.x] = true;
 			}
 		}
+		bridges.shrink_to_fit();
 		sort(bridges.rbegin(), bridges.rend());
 
 		cerr << "Enemy bridge's worth: [ ";
